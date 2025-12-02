@@ -1,18 +1,8 @@
-# requirements.txt
-
-# Gemini APIへのアクセスに使用するGoogle公式ライブラリ
-google-genai==1.45.0
-google-api-core==2.25.1
-
-# Web APIフレームワーク本体
-fastapi==0.115.14
-pydantic==2.11.7
-
-# 非同期Webサーバー
-uvicorn==0.35.0
-
-# 画像ファイルの前処理（アップロードされたファイルを開くなどに使用）
-pillow==11.3.0
-
-# Gunicornなどの本番用サーバーを使用する場合はこれも追加
-gunicorn
+fastapi
+uvicorn[standard]
+scrapy
+twisted
+Pillow
+google-genai
+python-dotenv
+requests
