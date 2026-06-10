@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+scrapy
+twisted
+Pillow
+google-genai
+python-dotenv
+requests

@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>画像内文字検索</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 30px auto;
+        }
+        input, button {
+            padding: 8px;
+            margin: 5px 0;
+            width: 100%;
+            font-size: 16px;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        .result {
+            margin-top: 20px;
+            padding: 12px;
+            border: 1px solid #ccc;
+        }
+        img {
+            max-width: 300px;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>画像内文字検索</h1>
+
+    <label>URL（開始地点）</label>
+    <input id="url" placeholder="https://example.com/" />
+
+    <label>キーワード（含まれるテキストを表示 / 空欄可）</label>
+    <input id="keyword" placeholder="検索" />
+
+    <label>取得画像数</label>
+    <input id="limit" type="number" value="5" />
+
+    <button onclick="startCrawl()">検索開始</button>
+
+    <div id="results"></div>
+
+    <script>
+        async function startCrawl() {
+            const url = document.getElementById("url").value;
+            const keyword = document.getElementById("keyword").value;
+            const limit = document.getElementById("limit").value;
+
+            document.getElementById("results").innerHTML = "検索中...";
+
+            const apiUrl =
+                `http://127.0.0.1:8000/crawl?url=${encodeURIComponent(url)}&keyword=${encodeURIComponent(keyword)}&limit=${encodeURIComponent(limit)}`
+
+            const res = await fetch(apiUrl);
+            const data = await res.json();
+
+            const area = document.getElementById("results");
+            area.innerHTML = "";
+
+            if (!data.results || data.results.length === 0) {
+                area.innerHTML = "<p>結果なし。</p>";
+                return;
+            }
+
+            data.results.forEach(item => {
+                const div = document.createElement("div");
+                div.className = "result";
+
+                div.innerHTML = `
+                    <strong>画像URL:</strong> <a href="${item.url}" target="_blank">${item.url}</a><br>
+                    <img src="${item.url}" /><br>
+                    <strong>抽出テキスト:</strong><br>
+                    <pre>${item.text}</pre>
+                    <strong>ページURL:</strong> <a href="${item.page_url}" target="_blank">${item.page_url}</a>
+                `;
+
+                area.appendChild(div);
+            });
+        }
+    </script>
+
+</body>
+</html>
