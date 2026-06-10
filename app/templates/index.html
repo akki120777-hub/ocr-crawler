@@ -57,7 +57,7 @@
             document.getElementById("results").innerHTML = "検索中...";
 
             const apiUrl =
-                `http://127.0.0.1:8000/crawl?url=${encodeURIComponent(url)}&keyword=${encodeURIComponent(keyword)}&limit=${encodeURIComponent(limit)}`
+    `/crawl?url=${encodeURIComponent(url)}&keyword=${encodeURIComponent(keyword)}&limit=${encodeURIComponent(limit)}`;
 
             const res = await fetch(apiUrl);
             const data = await res.json();
