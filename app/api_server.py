@@ -1,6 +1,5 @@
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse, HTMLResponse
-from fastapi.templating import Jinja2Templates
 import subprocess
 import uuid
 import os
@@ -10,22 +9,51 @@ import asyncio
 
 app = FastAPI()
 
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-templates = Jinja2Templates(
-    directory=os.path.join(BASE_DIR, "templates")
-)
 
+# ----------------------------------------
+# トップページ
+# ----------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
-def read_root(request: Request):
-    return templates.TemplateResponse(
-        "index.html",
-        {"request": request}
+def read_root():
+
+    index_path = os.path.join(
+        BASE_DIR,
+        "templates",
+        "index.html"
     )
 
+    try:
 
+        with open(
+            index_path,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
+            html = f.read()
+
+        return HTMLResponse(content=html)
+
+    except Exception as e:
+
+        return HTMLResponse(
+            content=f"""
+            <h1>エラー</h1>
+            <p>index.htmlを読み込めませんでした。</p>
+            <p>{str(e)}</p>
+            """,
+            status_code=500
+        )
+
+
+# ----------------------------------------
 # Scrapyプロジェクトの場所
+# ----------------------------------------
+
 SCRAPY_DIR = os.path.join(
     BASE_DIR,
     "spocr",
@@ -33,17 +61,25 @@ SCRAPY_DIR = os.path.join(
 )
 
 
+# ----------------------------------------
+# /crawl
+# ----------------------------------------
+
 @app.get("/crawl")
 async def crawl(
     url: str = Query(...),
     keyword: str = Query(""),
     limit: int = Query(5)
 ):
+
     """
     Scrapyクローラーを実行して結果を返す
     """
 
-    # Scrapyが出力するJSONファイル
+    # ----------------------------------------
+    # 出力JSONファイル
+    # ----------------------------------------
+
     output_file = f"output_{uuid.uuid4()}.json"
 
     output_path = os.path.join(
@@ -51,20 +87,29 @@ async def crawl(
         output_file
     )
 
-    # Scrapy実行コマンド
+
+    # ----------------------------------------
+    # Scrapyコマンド
+    # ----------------------------------------
+
     cmd = [
         "scrapy",
         "crawl",
         "crawler",
+
         "-a",
         f"url={url}",
+
         "-a",
         f"keyword={keyword}",
+
         "-s",
         f"CLOSESPIDER_ITEMCOUNT={limit}",
+
         "-O",
         output_path
     ]
+
 
     print("====================================")
     print("Scrapy開始")
@@ -75,13 +120,15 @@ async def crawl(
     print(f"Output: {output_path}")
     print("====================================")
 
+
+    # ----------------------------------------
+    # Scrapy実行
+    # ----------------------------------------
+
     def run_scrapy_and_read_result():
 
         try:
 
-            # ★重要
-            # capture_output=Trueを使わず、
-            # ScrapyのログをRenderへ直接表示する
             subprocess.run(
                 cmd,
                 check=True,
@@ -91,12 +138,10 @@ async def crawl(
 
         except subprocess.CalledProcessError as e:
 
-            error_msg = (
+            raise Exception(
                 f"Scrapy failed "
                 f"(Exit Code: {e.returncode})"
             )
-
-            raise Exception(error_msg)
 
         except subprocess.TimeoutExpired:
 
@@ -104,15 +149,17 @@ async def crawl(
                 "Scrapy execution timed out."
             )
 
-        # --------------------------------
+
+        # ----------------------------------------
         # JSONファイル確認
-        # --------------------------------
+        # ----------------------------------------
 
         if os.path.exists(output_path):
 
             print(
                 f"Scrapy結果ファイル発見: {output_path}"
             )
+
 
             with open(
                 output_path,
@@ -122,16 +169,20 @@ async def crawl(
 
                 data = json.load(f)
 
-            # 読み終わったら削除
+
+            # JSON削除
             os.remove(output_path)
+
 
             print(
                 f"Scrapy完了。結果件数: {len(data)}"
             )
 
+
             return {
                 "results": data
             }
+
 
         else:
 
@@ -139,6 +190,11 @@ async def crawl(
                 "Scrapy completed, "
                 "but output file was not generated."
             )
+
+
+    # ----------------------------------------
+    # 非同期でScrapy実行
+    # ----------------------------------------
 
     try:
 
@@ -148,15 +204,18 @@ async def crawl(
 
         return result
 
+
     except Exception as e:
 
         if os.path.exists(output_path):
 
             os.remove(output_path)
 
+
         print(
             f"Scrapyエラー: {str(e)}"
         )
+
 
         return JSONResponse(
             content={
