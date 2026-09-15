@@ -2,7 +2,9 @@ import scrapy
 from urllib.parse import urlparse
 import io
 import os
+
 from twisted.internet import threads
+
 from google.genai import client
 from PIL import Image
 
@@ -10,59 +12,105 @@ from PIL import Image
 class CrawlerSpider(scrapy.Spider):
     name = "crawler"
 
-    # 使用するGeminiモデル
     MODEL_NAME = "gemini-2.5-flash"
 
-    def __init__(self, url=None, keyword=None, domain=None, *args, **kwargs):
+    def __init__(
+        self,
+        url=None,
+        keyword=None,
+        domain=None,
+        limit=5,
+        *args,
+        **kwargs
+    ):
         super().__init__(*args, **kwargs)
 
+        # --------------------------------
+        # URL
+        # --------------------------------
         if not url:
             raise ValueError("URLを指定してください")
 
         self.start_urls = [url]
-        self.keyword = keyword
 
-        # Gemini APIキーを環境変数から取得
+        # --------------------------------
+        # キーワード
+        # --------------------------------
+        self.keyword = keyword or ""
+
+        # --------------------------------
+        # 検索結果の最大件数
+        # --------------------------------
+        try:
+            self.limit = max(1, int(limit))
+        except (ValueError, TypeError):
+            self.limit = 5
+
+        # 実際に検索結果として採用した件数
+        self.result_count = 0
+
+        # --------------------------------
+        # Gemini API
+        # --------------------------------
         api_key = os.environ.get("GEMINI_API_KEY")
 
         if not api_key:
-            raise ValueError("GEMINI_API_KEY が設定されていません")
+            raise ValueError(
+                "GEMINI_API_KEY が設定されていません"
+            )
 
-        self.gemini_client = client.Client(api_key=api_key)
+        self.gemini_client = client.Client(
+            api_key=api_key
+        )
 
-        # domainが指定されていれば優先
-        # 指定されていなければ開始URLから自動取得
+        # --------------------------------
+        # allowed_domains
+        # --------------------------------
         if domain is not None:
+
             if domain == "":
                 self.allowed_domains = []
+
             else:
                 self.allowed_domains = [domain]
+
         else:
+
             parsed = urlparse(url)
 
             if parsed.hostname:
-                self.allowed_domains = [parsed.hostname]
+                self.allowed_domains = [
+                    parsed.hostname
+                ]
+
             else:
                 self.allowed_domains = []
 
         self.logger.info(
-            f"★★★ Spider開始 ★★★ URL={url}, keyword={keyword}, domain={self.allowed_domains}"
+            "★★★ Spider開始 ★★★ "
+            f"URL={url}, "
+            f"keyword={keyword}, "
+            f"limit={self.limit}, "
+            f"domain={self.allowed_domains}"
         )
 
-    def parse(self, response):
-        """
-        HTMLページから画像を取得し、
-        ページ内リンクも辿る。
-        """
+    # ==================================================
+    # HTMLページ
+    # ==================================================
 
-        # ★ Renderでどこまで進んでいるか確認するためのログ
+    def parse(self, response):
+
         self.logger.info(
             f"★★★ parse開始 ★★★ URL={response.url}"
         )
 
-        # Content-Typeを確認
+        # --------------------------------
+        # Content-Type確認
+        # --------------------------------
+
         content_type = response.headers.get(
-            "Content-Type", b""
+            "Content-Type",
+            b""
         ).decode(
             "utf-8",
             errors="ignore"
@@ -72,24 +120,36 @@ class CrawlerSpider(scrapy.Spider):
             f"★★★ Content-Type: {content_type} ★★★"
         )
 
-        # HTML以外をスキップ
         if "text/html" not in content_type:
+
             self.logger.info(
-                f"★★★ HTMLではないためスキップ: {response.url} ★★★"
+                "★★★ HTMLではないためスキップ: "
+                f"{response.url} ★★★"
             )
+
             return
 
         # --------------------------------
-        # ページ内の画像を取得
+        # 画像取得
         # --------------------------------
 
-        image_sources = response.css("img::attr(src)").getall()
+        image_sources = response.css(
+            "img::attr(src)"
+        ).getall()
 
         self.logger.info(
-            f"★★★ ページ内画像数: {len(image_sources)} ★★★"
+            f"★★★ ページ内画像数: "
+            f"{len(image_sources)} ★★★"
         )
 
         for img_src in image_sources:
+
+            # SVGなどはOCR対象外
+            if img_src.lower().split("?")[0].endswith(".svg"):
+                self.logger.info(
+                    f"★★★ SVG画像をスキップ ★★★ {img_src}"
+                )
+                continue
 
             img_url = response.urljoin(img_src)
 
@@ -107,29 +167,36 @@ class CrawlerSpider(scrapy.Spider):
             )
 
         # --------------------------------
-        # ページ内リンクを辿る
+        # ページ内リンク
         # --------------------------------
 
-        links = response.css("a::attr(href)").getall()
+        links = response.css(
+            "a::attr(href)"
+        ).getall()
 
         self.logger.info(
-            f"★★★ ページ内リンク数: {len(links)} ★★★"
+            f"★★★ ページ内リンク数: "
+            f"{len(links)} ★★★"
         )
 
         for href in links:
 
             parsed_href = urlparse(href)
 
-            # http / https / 相対URLのみ処理
             if (
-                parsed_href.scheme in ("http", "https", "")
+                parsed_href.scheme in (
+                    "http",
+                    "https",
+                    ""
+                )
                 and not parsed_href.path.startswith("#")
             ):
 
                 next_url = response.urljoin(href)
 
                 self.logger.info(
-                    f"★★★ 次のページへ: {next_url} ★★★"
+                    f"★★★ 次のページへ: "
+                    f"{next_url} ★★★"
                 )
 
                 yield response.follow(
@@ -137,16 +204,20 @@ class CrawlerSpider(scrapy.Spider):
                     callback=self.parse
                 )
 
-            elif parsed_href.scheme in ("tel", "mailto"):
+            elif parsed_href.scheme in (
+                "tel",
+                "mailto"
+            ):
 
                 self.logger.debug(
                     f"tel/mailtoをスキップ: {href}"
                 )
 
+    # ==================================================
+    # Gemini OCR
+    # ==================================================
+
     def _ocr_bytes(self, img_bytes):
-        """
-        Gemini APIを使って画像内の日本語テキストをOCRする。
-        """
 
         # --------------------------------
         # 画像をPILで読み込む
@@ -162,20 +233,35 @@ class CrawlerSpider(scrapy.Spider):
 
         except Exception as e:
 
-            return f"Error loading image: {e}"
+            return f"ERROR_IMAGE:{e}"
 
         # --------------------------------
-        # Geminiへのプロンプト
+        # Geminiへの指示
         # --------------------------------
 
-        prompt_text = (
-            "この画像に含まれる日本語テキストを正確に抽出してください。"
-            "ただし、画像を説明するテキストは不要です。"
-            "抽出したテキストのみを返してください。"
-        )
+        prompt_text = """
+この画像に含まれる日本語テキストだけを正確に抽出してください。
+
+重要なルール：
+
+1. 画像内に日本語の文字が存在する場合
+   → 画像に実際に書かれている日本語テキストだけを返してください。
+
+2. 画像内に日本語テキストが存在しない場合
+   → 必ず NO_TEXT とだけ返してください。
+
+3. 「この画像には日本語テキストがありません」
+   「日本語テキストは含まれていません」
+   などの説明文は絶対に返さないでください。
+
+4. 画像の内容の説明、推測、解説は不要です。
+
+5. 日本語テキストが存在する場合は、
+   抽出した文字だけを返してください。
+""".strip()
 
         # --------------------------------
-        # Gemini API呼び出し
+        # Gemini API
         # --------------------------------
 
         try:
@@ -184,40 +270,51 @@ class CrawlerSpider(scrapy.Spider):
                 "★★★ Gemini API呼び出し ★★★"
             )
 
-            response = self.gemini_client.models.generate_content(
-                model=self.MODEL_NAME,
-                contents=[
-                    prompt_text,
-                    image
-                ]
+            response = (
+                self.gemini_client
+                .models
+                .generate_content(
+                    model=self.MODEL_NAME,
+                    contents=[
+                        prompt_text,
+                        image
+                    ]
+                )
             )
 
             self.logger.info(
                 "★★★ Gemini API応答受信 ★★★"
             )
 
-            # OCR結果
             if response and response.text:
 
-                return response.text.strip()
+                text = response.text.strip()
 
-            return ""
+                # --------------------------------
+                # NO_TEXT判定
+                # --------------------------------
+
+                if text.upper() == "NO_TEXT":
+
+                    return "NO_TEXT"
+
+                return text
+
+            return "NO_TEXT"
 
         except Exception as e:
 
-            return f"Gemini API error: {e}"
+            return f"ERROR_GEMINI:{e}"
+
+    # ==================================================
+    # 画像処理
+    # ==================================================
 
     def parse_image(self, response):
-        """
-        取得した画像をGemini OCRにかける。
-        """
-
-        # --------------------------------
-        # 画像か確認
-        # --------------------------------
 
         content_type = response.headers.get(
-            "Content-Type", b""
+            "Content-Type",
+            b""
         ).decode(
             "utf-8",
             errors="ignore"
@@ -238,13 +335,19 @@ class CrawlerSpider(scrapy.Spider):
         )
 
         self.logger.info(
-            f"★★★ 画像Content-Type: {content_type} ★★★"
+            f"★★★ 画像Content-Type: "
+            f"{content_type} ★★★"
         )
+
+        # --------------------------------
+        # 本当に画像か確認
+        # --------------------------------
 
         if not content_type.startswith("image/"):
 
             self.logger.info(
-                f"★★★ 画像ではないためスキップ ★★★ {img_url}"
+                "★★★ 画像ではないためスキップ ★★★ "
+                f"{img_url}"
             )
 
             return
@@ -257,15 +360,14 @@ class CrawlerSpider(scrapy.Spider):
             f"★★★ Gemini OCR開始 ★★★ {img_url}"
         )
 
-        # Gemini APIは同期処理なので別スレッドで実行
         d = threads.deferToThread(
             self._ocr_bytes,
             response.body
         )
 
-        # --------------------------------
+        # ==================================================
         # OCR成功時
-        # --------------------------------
+        # ==================================================
 
         def _on_ocr(text):
 
@@ -273,10 +375,11 @@ class CrawlerSpider(scrapy.Spider):
                 f"★★★ Gemini OCR完了 ★★★ {img_url}"
             )
 
+            # --------------------------------
             # 画像読み込みエラー
-            if text.startswith(
-                "Error loading image:"
-            ):
+            # --------------------------------
+
+            if text.startswith("ERROR_IMAGE:"):
 
                 self.logger.warning(
                     f"画像読み込みエラー: {text}"
@@ -284,10 +387,11 @@ class CrawlerSpider(scrapy.Spider):
 
                 return []
 
+            # --------------------------------
             # Gemini APIエラー
-            if text.startswith(
-                "Gemini API error:"
-            ):
+            # --------------------------------
+
+            if text.startswith("ERROR_GEMINI:"):
 
                 self.logger.error(
                     f"Gemini APIエラー: {text}"
@@ -295,59 +399,141 @@ class CrawlerSpider(scrapy.Spider):
 
                 return []
 
-            # OCR結果をログに出す
-            self.logger.info(
-                f"★★★ OCR結果 ★★★ {text[:300]}"
-            )
+            # --------------------------------
+            # 日本語テキストなし
+            # --------------------------------
+
+            if text == "NO_TEXT":
+
+                self.logger.info(
+                    "★★★ 日本語テキストなし ★★★ "
+                    f"{img_url}"
+                )
+
+                return []
 
             # --------------------------------
-            # キーワード検索
+            # OCR結果
             # --------------------------------
+
+            self.logger.info(
+                f"★★★ OCR結果 ★★★ "
+                f"{text[:300]}"
+            )
+
+            # ==================================================
+            # limitに達していたら結果に追加しない
+            # ==================================================
+
+            if self.result_count >= self.limit:
+
+                self.logger.info(
+                    "★★★ 結果件数がlimitに到達済み "
+                    "→ スキップ ★★★"
+                )
+
+                return []
+
+            # ==================================================
+            # キーワード検索
+            # ==================================================
 
             if self.keyword:
 
                 if self.keyword in text:
 
+                    # --------------------------------
+                    # 結果件数を1件増やす
+                    # --------------------------------
+
+                    self.result_count += 1
+
                     self.logger.info(
-                        f"★★★ キーワード一致 ★★★ "
-                        f"「{self.keyword}」 → {img_url}"
+                        "★★★ キーワード一致 ★★★ "
+                        f"「{self.keyword}」 "
+                        f"→ {img_url}"
                     )
 
-                    return [
-                        {
-                            "url": img_url,
-                            "text": text,
-                            "page_url": page_url
-                        }
-                    ]
+                    self.logger.info(
+                        "★★★ 現在の結果件数 ★★★ "
+                        f"{self.result_count}/{self.limit}"
+                    )
+
+                    result = [{
+                        "url": img_url,
+                        "text": text,
+                        "page_url": page_url
+                    }]
+
+                    # --------------------------------
+                    # limit到達
+                    # --------------------------------
+
+                    if self.result_count >= self.limit:
+
+                        self.logger.info(
+                            "★★★ limit到達 ★★★ "
+                            f"{self.result_count}件"
+                        )
+
+                        self.crawler.engine.close_spider(
+                            self,
+                            reason="result_limit_reached"
+                        )
+
+                    return result
 
                 else:
 
                     self.logger.info(
-                        f"★★★ キーワード不一致 ★★★ "
-                        f"「{self.keyword}」 → {img_url}"
+                        "★★★ キーワード不一致 ★★★ "
+                        f"「{self.keyword}」 "
+                        f"→ {img_url}"
                     )
 
                     return []
 
-            # キーワード空欄の場合
+            # ==================================================
+            # キーワードなし
+            # ==================================================
+
             else:
 
+                self.result_count += 1
+
                 self.logger.info(
-                    f"★★★ キーワードなし → 結果として返す ★★★"
+                    "★★★ キーワードなし "
+                    "→ 結果として返す ★★★"
                 )
 
-                return [
-                    {
-                        "url": img_url,
-                        "text": text,
-                        "page_url": page_url
-                    }
-                ]
+                self.logger.info(
+                    "★★★ 現在の結果件数 ★★★ "
+                    f"{self.result_count}/{self.limit}"
+                )
 
-        # --------------------------------
-        # OCR失敗時
-        # --------------------------------
+                result = [{
+                    "url": img_url,
+                    "text": text,
+                    "page_url": page_url
+                }]
+
+                if self.result_count >= self.limit:
+
+                    self.logger.info(
+                        "★★★ limit到達 ★★★ "
+                        f"{self.result_count}件"
+                    )
+
+                    self.crawler.engine.close_spider(
+                        self,
+                        reason="result_limit_reached"
+                    )
+
+                return result
+
+        # ==================================================
+        # OCR失敗
+        # ==================================================
 
         def _on_error(failure):
 
@@ -357,7 +543,6 @@ class CrawlerSpider(scrapy.Spider):
 
             return []
 
-        # Deferredに処理を登録
         d.addCallback(_on_ocr)
         d.addErrback(_on_error)
 
