@@ -1,11 +1,12 @@
-import asyncio
+import scrapy
+from urllib.parse import urlparse
 import io
 import os
-import re
 import time
-from urllib.parse import urljoin, urlparse
+import re
+import asyncio
+import threading
 
-import scrapy
 from google.genai import client
 from PIL import Image
 
@@ -13,75 +14,25 @@ from PIL import Image
 class CrawlerSpider(scrapy.Spider):
     name = "crawler"
 
-    # ==========================================================
-    # 基本設定
-    # ==========================================================
-
     MODEL_NAME = "gemini-2.5-flash"
 
-    # Gemini Free Tier のRPM対策
-    # 14秒間隔 → 約4.3回/分
-    GEMINI_INTERVAL = float(
-        os.environ.get("GEMINI_INTERVAL", "14")
-    )
+    # Gemini APIの最低呼び出し間隔
+    # Free TierのRPM対策
+    GEMINI_INTERVAL = 14
 
-    # Gemini API最大リトライ回数
+    # Gemini APIの最大リトライ回数
     GEMINI_MAX_RETRIES = 3
 
-    # Geminiエラー時の基本待機時間
-    DEFAULT_RETRY_SECONDS = 45
-
-    # デフォルトページ数
-    DEFAULT_MAX_PAGES = 30
+    # デフォルト最大ページ数
+    MAX_PAGES = 30
 
     custom_settings = {
-        # ------------------------------------------------------
-        # Scrapy通信
-        # ------------------------------------------------------
-
-        # 通常のWebページ取得は1つずつ
         "CONCURRENT_REQUESTS": 1,
         "CONCURRENT_REQUESTS_PER_DOMAIN": 1,
-
-        # Item処理も1つずつ
-        "CONCURRENT_ITEMS": 1,
-
         "DOWNLOAD_DELAY": 0.2,
-
         "DOWNLOAD_TIMEOUT": 30,
-
-        "REDIRECT_ENABLED": True,
-
-        # ------------------------------------------------------
-        # 不要なScrapy Telnet Consoleを無効化
-        # ------------------------------------------------------
-
         "TELNETCONSOLE_ENABLED": False,
-
-        # ------------------------------------------------------
-        # ログ
-        # ------------------------------------------------------
-
-        "LOG_LEVEL": "INFO",
-
-        # HTTPキャッシュは使用しない
-        "HTTPCACHE_ENABLED": False,
-
-        # 深さ制限
-        "DEPTH_LIMIT": 100,
-
-        # Chrome風User-Agent
-        "USER_AGENT": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 "
-            "(KHTML, like Gecko) "
-            "Chrome/153.0.0.0 Safari/537.36"
-        ),
     }
-
-    # ==========================================================
-    # 初期化
-    # ==========================================================
 
     def __init__(
         self,
@@ -98,106 +49,60 @@ class CrawlerSpider(scrapy.Spider):
         if not url:
             raise ValueError("URLを指定してください")
 
-        # ------------------------------------------------------
-        # URL
-        # ------------------------------------------------------
-
-        parsed_url = urlparse(url)
-
-        if not parsed_url.scheme or not parsed_url.netloc:
-            raise ValueError(
-                "正しいURLを指定してください"
-            )
-
         self.start_urls = [url]
 
-        # ------------------------------------------------------
-        # キーワード
-        # ------------------------------------------------------
+        self.keyword = keyword or ""
 
-        self.keyword = (keyword or "").strip()
-
-        # ------------------------------------------------------
-        # 結果件数
-        # ------------------------------------------------------
+        # ----------------------------------------------
+        # limit
+        # ----------------------------------------------
 
         try:
             self.limit = max(1, int(limit))
         except (ValueError, TypeError):
             self.limit = 5
 
-        # ------------------------------------------------------
-        # ページ数
-        # ------------------------------------------------------
+        # ----------------------------------------------
+        # max_pages
+        # ----------------------------------------------
 
         try:
-            self.max_pages = max(
-                1,
-                int(max_pages)
-            )
+            self.max_pages = max(1, int(max_pages))
         except (ValueError, TypeError):
-            self.max_pages = self.DEFAULT_MAX_PAGES
+            self.max_pages = self.MAX_PAGES
 
-        # ------------------------------------------------------
-        # カウンター
-        # ------------------------------------------------------
+        # ----------------------------------------------
+        # カウンタ
+        # ----------------------------------------------
 
         self.result_count = 0
-
         self.page_count = 0
 
         self.image_found_count = 0
-
-        self.image_downloaded_count = 0
-
+        self.image_fetched_count = 0
         self.ocr_started_count = 0
-
         self.ocr_completed_count = 0
-
         self.ocr_result_count = 0
+        self.keyword_match_count = 0
 
-        # ------------------------------------------------------
-        # ページ管理
-        # ------------------------------------------------------
+        # ----------------------------------------------
+        # Gemini API管理
+        # ----------------------------------------------
+
+        self.last_gemini_call = 0.0
+        self.gemini_lock = threading.Lock()
+
+        # ----------------------------------------------
+        # 重複ページ防止
+        # ----------------------------------------------
 
         self.visited_pages = set()
 
-        # 画像重複防止
-        self.seen_images = set()
+        # ----------------------------------------------
+        # APIキー
+        # ----------------------------------------------
 
-        # ------------------------------------------------------
-        # ドメイン制限
-        # ------------------------------------------------------
-
-        if domain is not None:
-
-            domain = domain.strip()
-
-            if domain:
-                self.allowed_domains = [
-                    domain
-                ]
-            else:
-                self.allowed_domains = []
-
-        else:
-
-            hostname = parsed_url.hostname
-
-            if hostname:
-                self.allowed_domains = [
-                    hostname
-                ]
-            else:
-                self.allowed_domains = []
-
-        # ------------------------------------------------------
-        # Gemini API
-        # ------------------------------------------------------
-
-        api_key = os.environ.get(
-            "GEMINI_API_KEY"
-        )
+        api_key = os.environ.get("GEMINI_API_KEY")
 
         if not api_key:
             raise ValueError(
@@ -208,132 +113,114 @@ class CrawlerSpider(scrapy.Spider):
             api_key=api_key
         )
 
-        # ------------------------------------------------------
-        # Gemini API呼び出し間隔管理
-        # ------------------------------------------------------
+        # ----------------------------------------------
+        # allowed_domains
+        # ----------------------------------------------
 
-        self.last_gemini_call = 0.0
+        if domain is not None:
+            if domain == "":
+                self.allowed_domains = []
+            else:
+                self.allowed_domains = [domain]
+        else:
+            parsed = urlparse(url)
 
-        # ------------------------------------------------------
-        # ログ
-        # ------------------------------------------------------
+            if parsed.hostname:
+                self.allowed_domains = [
+                    parsed.hostname
+                ]
+            else:
+                self.allowed_domains = []
 
         self.logger.info(
             "===================================="
         )
-
         self.logger.info(
             "★★★ Spider開始 ★★★"
         )
-
         self.logger.info(
             f"URL={url}"
         )
-
         self.logger.info(
             f"keyword={self.keyword}"
         )
-
         self.logger.info(
             f"limit={self.limit}"
         )
-
         self.logger.info(
             f"max_pages={self.max_pages}"
         )
-
         self.logger.info(
             f"domain={self.allowed_domains}"
         )
-
         self.logger.info(
-            f"Gemini OCR間隔="
-            f"{self.GEMINI_INTERVAL}秒"
+            f"Gemini OCR間隔={self.GEMINI_INTERVAL}秒"
         )
-
         self.logger.info(
-            "★★★ OCRは1画像ずつ逐次処理 ★★★"
+            "★★★ OCR逐次処理モード ★★★"
         )
-
         self.logger.info(
             "===================================="
         )
 
-    # ==========================================================
-    # 開始
-    # ==========================================================
-
-    def start_requests(self):
-
-        url = self.start_urls[0]
-
-        self.visited_pages.add(
-            self.normalize_url(url)
-        )
-
-        yield scrapy.Request(
-            url=url,
-            callback=self.parse,
-            errback=self.parse_page_error,
-            dont_filter=True,
-        )
-
-    # ==========================================================
+    # ==================================================
     # ページ解析
-    # ==========================================================
+    # ==================================================
 
-    def parse(self, response):
+    async def parse(self, response):
 
-        # ------------------------------------------------------
-        # limit到達
-        # ------------------------------------------------------
+        # ----------------------------------------------
+        # limit確認
+        # ----------------------------------------------
 
         if self.result_count >= self.limit:
-
             self.logger.info(
                 "★★★ limit到達済み → ページ解析終了 ★★★"
             )
-
             return
 
-        # ------------------------------------------------------
-        # ページ数
-        # ------------------------------------------------------
+        # ----------------------------------------------
+        # ページ数確認
+        # ----------------------------------------------
 
         if self.page_count >= self.max_pages:
-
             self.logger.info(
-                "★★★ max_pages到達 → ページ解析終了 ★★★"
+                "★★★ max_pages到達 → 終了 ★★★"
             )
-
             return
 
         self.page_count += 1
 
+        current_page_url = response.url
+
+        self.visited_pages.add(
+            current_page_url.split("#")[0]
+        )
+
         self.logger.info(
             "===================================="
         )
-
         self.logger.info(
             f"★★★ ページ解析 "
             f"{self.page_count}/{self.max_pages} ★★★"
         )
-
         self.logger.info(
-            f"URL={response.url}"
+            f"URL={current_page_url}"
         )
 
-        # ------------------------------------------------------
+        # ----------------------------------------------
         # Content-Type
-        # ------------------------------------------------------
+        # ----------------------------------------------
 
-        content_type = response.headers.get(
-            "Content-Type",
-            b""
-        ).decode(
-            "utf-8",
-            errors="ignore"
-        ).lower()
+        content_type = (
+            response.headers
+            .get("Content-Type", b"")
+            .decode(
+                "utf-8",
+                errors="ignore"
+            )
+            .lower()
+        )
 
         self.logger.info(
             f"Content-Type={content_type}"
@@ -347,179 +234,421 @@ class CrawlerSpider(scrapy.Spider):
 
             return
 
-        # ------------------------------------------------------
-        # ページ内画像URLを取得
-        # ------------------------------------------------------
+        # ==================================================
+        # 画像URL収集
+        # ==================================================
 
-        image_urls = self.extract_image_urls(
-            response
-        )
+        image_urls = []
+
+        # img src
+        image_sources = response.css(
+            "img::attr(src)"
+        ).getall()
+
+        # srcset
+        srcsets = response.css(
+            "img::attr(srcset)"
+        ).getall()
+
+        for img_src in image_sources:
+
+            if not img_src:
+                continue
+
+            img_url = response.urljoin(
+                img_src
+            )
+
+            if self._is_valid_image_url(img_url):
+
+                if img_url not in image_urls:
+
+                    image_urls.append(
+                        img_url
+                    )
+
+        # srcsetからも取得
+        for srcset in srcsets:
+
+            if not srcset:
+                continue
+
+            for part in srcset.split(","):
+
+                candidate = part.strip()
+
+                if not candidate:
+                    continue
+
+                # "url 2x" のような形式
+                img_src = candidate.split()[0]
+
+                img_url = response.urljoin(
+                    img_src
+                )
+
+                if self._is_valid_image_url(img_url):
+
+                    if img_url not in image_urls:
+
+                        image_urls.append(
+                            img_url
+                        )
+
+        # ----------------------------------------------
+        # 画像発見ログ
+        # ----------------------------------------------
+
+        for img_url in image_urls:
+
+            self.image_found_count += 1
+
+            self.logger.info(
+                f"★★★ 画像発見 ★★★ "
+                f"{img_url}"
+            )
 
         self.logger.info(
             f"★★★ ページ内画像候補: "
             f"{len(image_urls)}件 ★★★"
         )
 
-        # ------------------------------------------------------
-        # 画像を1枚ずつ処理
-        #
-        # ★重要★
-        #
-        # ここでは大量の画像Requestをyieldしない。
-        #
-        # 最初の1枚だけRequest。
-        #
-        # その画像のOCR完了後に、
-        # parse_image()から次の画像Requestを出す。
-        # ------------------------------------------------------
+        # ==================================================
+        # 次ページ候補を1つだけ決定
+        # ==================================================
+
+        next_page_url = None
+
+        if self.page_count < self.max_pages:
+
+            links = response.css(
+                "a::attr(href)"
+            ).getall()
+
+            self.logger.info(
+                f"★★★ ページ内リンク数: "
+                f"{len(links)} ★★★"
+            )
+
+            for href in links:
+
+                if not href:
+                    continue
+
+                parsed_href = urlparse(href)
+
+                # tel / mailto除外
+                if parsed_href.scheme in (
+                    "tel",
+                    "mailto",
+                    "javascript"
+                ):
+                    continue
+
+                next_url = response.urljoin(
+                    href
+                )
+
+                # fragment除去
+                next_url = next_url.split("#")[0]
+
+                if not next_url:
+                    continue
+
+                parsed_next = urlparse(
+                    next_url
+                )
+
+                # http / httpsのみ
+                if parsed_next.scheme not in (
+                    "http",
+                    "https"
+                ):
+                    continue
+
+                # 外部ドメイン除外
+                if self.allowed_domains:
+
+                    if (
+                        parsed_next.hostname
+                        not in self.allowed_domains
+                    ):
+                        continue
+
+                # 自分自身
+                if next_url == current_page_url.split("#")[0]:
+                    continue
+
+                # 重複ページ
+                if next_url in self.visited_pages:
+                    continue
+
+                next_page_url = next_url
+
+                break
+
+        # ==================================================
+        # 画像逐次処理
+        # ==================================================
 
         if image_urls:
-
-            first_image = image_urls[0]
-
-            remaining_images = image_urls[1:]
 
             self.logger.info(
                 "★★★ 画像逐次処理開始 ★★★"
             )
 
+            # 最初の画像だけをRequestする
+            #
+            # 残りの画像はparse_image()が
+            # OCR完了後に次のRequestを生成する。
+            #
+            # これにより、
+            #
+            # 画像1
+            # ↓
+            # OCR1
+            # ↓
+            # 画像2
+            # ↓
+            # OCR2
+            #
+            # という完全逐次処理になる。
+
+            first_url = image_urls[0]
+
             yield scrapy.Request(
-                url=first_image,
+                first_url,
                 callback=self.parse_image,
-                errback=self.parse_image_error,
                 meta={
-                    "image_queue": remaining_images,
-                    "source_page": response.url,
+                    "img_url": first_url,
+                    "page_url": current_page_url,
+                    "image_urls": image_urls,
+                    "image_index": 0,
+                    "next_page_url": next_page_url,
                 },
                 dont_filter=True,
             )
 
-        else:
+            return
 
-            # --------------------------------------------------
-            # 画像がなかった場合
-            # --------------------------------------------------
+        # ==================================================
+        # 画像がない場合
+        # ==================================================
 
-            yield from self.next_page_request(
-                response
+        self.logger.info(
+            "★★★ このページには処理対象画像なし ★★★"
+        )
+
+        if next_page_url:
+
+            self.visited_pages.add(
+                next_page_url
             )
 
-    # ==========================================================
+            self.logger.info(
+                f"★★★ 次のページへ ★★★ "
+                f"{next_page_url}"
+            )
+
+            yield scrapy.Request(
+                next_page_url,
+                callback=self.parse,
+            )
+
+        else:
+
+            self.logger.info(
+                "★★★ 次に処理できるページなし ★★★"
+            )
+
+    # ==================================================
+    # 画像URLチェック
+    # ==================================================
+
+    def _is_valid_image_url(self, img_url):
+
+        if not img_url:
+            return False
+
+        if img_url.startswith("data:"):
+            return False
+
+        parsed = urlparse(img_url)
+
+        if parsed.scheme not in (
+            "http",
+            "https"
+        ):
+            return False
+
+        clean_url = (
+            img_url
+            .lower()
+            .split("?")[0]
+        )
+
+        if clean_url.endswith(".svg"):
+            return False
+
+        return True
+
+    # ==================================================
     # 画像解析
-    # ==========================================================
+    #
+    # ★重要
+    #
+    # async generatorとして動作する。
+    # しかし、この関数自身を await することはしない。
+    #
+    # OCR完了後、この関数の中から直接
+    # 次のRequestをyieldする。
+    # ==================================================
 
     async def parse_image(self, response):
 
-        image_url = response.url
+        img_url = response.meta.get(
+            "img_url",
+            response.url
+        )
 
-        # ------------------------------------------------------
+        page_url = response.meta.get(
+            "page_url",
+            ""
+        )
+
+        image_urls = response.meta.get(
+            "image_urls",
+            []
+        )
+
+        image_index = response.meta.get(
+            "image_index",
+            0
+        )
+
+        next_page_url = response.meta.get(
+            "next_page_url"
+        )
+
+        # ----------------------------------------------
         # limit確認
-        # ------------------------------------------------------
+        # ----------------------------------------------
 
         if self.result_count >= self.limit:
 
             self.logger.info(
-                "★★★ limit到達 → OCRしない ★★★"
+                "★★★ limit到達済み → 画像OCRしない ★★★"
             )
 
             return
 
-        # ------------------------------------------------------
-        # HTTPステータス
-        # ------------------------------------------------------
-
-        if response.status != 200:
-
-            self.logger.warning(
-                "★★★ 画像HTTPエラー ★★★ "
-                f"status={response.status} "
-                f"{image_url}"
-            )
-
-            await self.process_next_image(
-                response
-            )
-
-            return
-
-        # ------------------------------------------------------
+        # ----------------------------------------------
         # Content-Type
-        # ------------------------------------------------------
+        # ----------------------------------------------
 
-        content_type = response.headers.get(
-            "Content-Type",
-            b""
-        ).decode(
-            "utf-8",
-            errors="ignore"
-        ).lower()
+        content_type = (
+            response.headers
+            .get(
+                "Content-Type",
+                b""
+            )
+            .decode(
+                "utf-8",
+                errors="ignore"
+            )
+            .lower()
+        )
+
+        self.image_fetched_count += 1
 
         self.logger.info(
-            "★★★ 画像取得 ★★★ "
+            f"★★★ 画像取得 ★★★ "
             f"status={response.status} "
-            f"{image_url}"
+            f"{img_url}"
         )
 
         self.logger.info(
-            "★★★ 画像Content-Type ★★★ "
+            f"★★★ 画像Content-Type ★★★ "
             f"{content_type}"
         )
 
-        # ------------------------------------------------------
+        # ----------------------------------------------
         # 画像ではない
-        # ------------------------------------------------------
+        # ----------------------------------------------
 
         if not content_type.startswith("image/"):
 
             self.logger.info(
-                "★★★ 画像ではないためスキップ ★★★ "
-                f"{image_url}"
+                "★★★ 画像ではないためスキップ ★★★"
             )
 
-            await self.process_next_image(
-                response
+            # 次の画像へ
+            next_request = self._make_next_image_request(
+                image_urls,
+                image_index,
+                page_url,
+                next_page_url,
             )
+
+            if next_request:
+                yield next_request
+            else:
+                yield from self._make_next_page_request(
+                    next_page_url
+                )
 
             return
 
-        # ------------------------------------------------------
+        # ----------------------------------------------
         # SVG
-        # ------------------------------------------------------
+        # ----------------------------------------------
 
         if "svg" in content_type:
 
             self.logger.info(
-                "★★★ SVGのためスキップ ★★★ "
-                f"{image_url}"
+                "★★★ SVGのためスキップ ★★★"
             )
 
-            await self.process_next_image(
-                response
+            next_request = self._make_next_image_request(
+                image_urls,
+                image_index,
+                page_url,
+                next_page_url,
             )
+
+            if next_request:
+                yield next_request
+            else:
+                yield from self._make_next_page_request(
+                    next_page_url
+                )
 
             return
 
-        self.image_downloaded_count += 1
-
-        # ------------------------------------------------------
+        # ==================================================
         # OCR開始
-        # ------------------------------------------------------
+        # ==================================================
 
         self.ocr_started_count += 1
 
         self.logger.info(
-            "★★★ Gemini OCR開始 ★★★ "
-            f"{image_url}"
+            f"★★★ Gemini OCR開始 ★★★ "
+            f"{img_url}"
         )
 
         try:
 
-            # ==================================================
-            # ★ここが重要★
+            # ------------------------------------------
+            # 重要
             #
-            # OCRが完全に終わるまで、
-            # この関数は次へ進まない。
-            # ==================================================
+            # Gemini APIは同期処理なので
+            # asyncio.to_thread()で別スレッドへ。
+            #
+            # ただしRequestは次に進めない。
+            #
+            # OCRが完全終了するまで
+            # この関数は待機する。
+            # ------------------------------------------
 
             text = await asyncio.to_thread(
                 self._ocr_bytes,
@@ -528,839 +657,573 @@ class CrawlerSpider(scrapy.Spider):
 
         except Exception as e:
 
-            self.logger.exception(
-                "★★★ OCR処理中に予期しないエラー ★★★"
+            self.logger.error(
+                f"★★★ OCR例外 ★★★ "
+                f"{e}"
             )
 
             text = (
-                "ERROR_GEMINI:"
-                f"{type(e).__name__}: {e}"
+                f"ERROR_GEMINI:{e}"
             )
 
-        # ------------------------------------------------------
+        # ==================================================
         # OCR完了
-        # ------------------------------------------------------
+        # ==================================================
 
         self.ocr_completed_count += 1
 
         self.logger.info(
-            "★★★ Gemini OCR完了 ★★★ "
-            f"{image_url}"
+            f"★★★ Gemini OCR完了 ★★★ "
+            f"{img_url}"
         )
 
-        # ------------------------------------------------------
-        # OCRエラー
-        # ------------------------------------------------------
+        # ----------------------------------------------
+        # エラー
+        # ----------------------------------------------
 
-        if isinstance(text, str) and text.startswith(
+        if text.startswith(
             "ERROR_IMAGE:"
         ):
 
             self.logger.warning(
-                f"画像読み込みエラー: {text}"
+                f"★★★ 画像読み込みエラー ★★★ "
+                f"{text}"
             )
 
-            await self.process_next_image(
-                response
-            )
-
-            return
-
-        if isinstance(text, str) and text.startswith(
+        elif text.startswith(
             "ERROR_GEMINI:"
         ):
 
             self.logger.error(
-                f"Gemini APIエラー: {text}"
+                f"★★★ Gemini APIエラー ★★★ "
+                f"{text}"
             )
 
-            await self.process_next_image(
-                response
-            )
-
-            return
-
-        # ------------------------------------------------------
+        # ----------------------------------------------
         # NO_TEXT
-        # ------------------------------------------------------
+        # ----------------------------------------------
 
-        if text == "NO_TEXT":
-
-            self.logger.info(
-                "★★★ 日本語テキストなし ★★★ "
-                f"{image_url}"
-            )
-
-            await self.process_next_image(
-                response
-            )
-
-            return
-
-        # ------------------------------------------------------
-        # OCR結果
-        # ------------------------------------------------------
-
-        self.ocr_result_count += 1
-
-        self.logger.info(
-            "★★★ OCR結果 ★★★ "
-            f"{text[:300]}"
-        )
-
-        # ------------------------------------------------------
-        # limit再確認
-        # ------------------------------------------------------
-
-        if self.result_count >= self.limit:
+        elif text == "NO_TEXT":
 
             self.logger.info(
-                "★★★ limit到達済み "
-                "→ 結果追加なし ★★★"
+                f"★★★ 日本語テキストなし ★★★ "
+                f"{img_url}"
             )
 
-            return
+        # ----------------------------------------------
+        # OCR結果あり
+        # ----------------------------------------------
 
-        # ------------------------------------------------------
-        # キーワード検索
-        # ------------------------------------------------------
+        else:
 
-        if self.keyword:
+            self.ocr_result_count += 1
 
-            if self.keyword in text:
+            self.logger.info(
+                f"★★★ OCR結果 ★★★ "
+                f"{text[:300]}"
+            )
 
-                self.result_count += 1
+            # ------------------------------------------
+            # キーワード判定
+            # ------------------------------------------
 
-                self.logger.info(
-                    "★★★ キーワード一致 ★★★ "
-                    f"「{self.keyword}」 "
-                    f"→ {image_url}"
-                )
+            if self.keyword:
 
-                self.logger.info(
-                    "★★★ 現在の結果件数 ★★★ "
-                    f"{self.result_count}/"
-                    f"{self.limit}"
-                )
+                if self.keyword in text:
 
-                yield {
-                    "url": image_url,
-                    "text": text,
-                }
+                    self.keyword_match_count += 1
 
-                # --------------------------------------------------
-                # limit到達
-                # --------------------------------------------------
+                    # limit再確認
+                    if self.result_count < self.limit:
 
-                if self.result_count >= self.limit:
+                        self.result_count += 1
+
+                        self.logger.info(
+                            "★★★ キーワード一致 ★★★ "
+                            f"「{self.keyword}」 "
+                            f"→ {img_url}"
+                        )
+
+                        self.logger.info(
+                            "★★★ 現在の結果件数 ★★★ "
+                            f"{self.result_count}/"
+                            f"{self.limit}"
+                        )
+
+                        # ----------------------------------
+                        # 結果を返す
+                        # ----------------------------------
+
+                        yield {
+                            "url": img_url,
+                            "text": text,
+                            "page_url": page_url,
+                        }
+
+                        # ----------------------------------
+                        # limit到達
+                        # ----------------------------------
+
+                        if self.result_count >= self.limit:
+
+                            self.logger.info(
+                                "★★★ limit到達 ★★★ "
+                                f"{self.result_count}件"
+                            )
+
+                            self.crawler.engine.close_spider(
+                                self,
+                                reason="result_limit_reached"
+                            )
+
+                            return
+
+                else:
 
                     self.logger.info(
-                        "★★★ limit到達 ★★★"
+                        "★★★ キーワード不一致 ★★★ "
+                        f"「{self.keyword}」 "
+                        f"→ {img_url}"
+                    )
+
+            else:
+
+                # キーワードなしの場合は
+                # OCRできた画像を結果にする
+
+                if self.result_count < self.limit:
+
+                    self.result_count += 1
+
+                    self.logger.info(
+                        "★★★ キーワードなし "
+                        "→ 結果として返す ★★★"
+                    )
+
+                    self.logger.info(
+                        "★★★ 現在の結果件数 ★★★ "
+                        f"{self.result_count}/"
+                        f"{self.limit}"
+                    )
+
+                    yield {
+                        "url": img_url,
+                        "text": text,
+                        "page_url": page_url,
+                    }
+
+                    if self.result_count >= self.limit:
+
+                        self.logger.info(
+                            "★★★ limit到達 ★★★ "
+                            f"{self.result_count}件"
+                        )
+
+                        self.crawler.engine.close_spider(
+                            self,
+                            reason="result_limit_reached"
+                        )
+
+                        return
+
+        # ==================================================
+        # OCR完了後
+        #
+        # 次の画像へ進む
+        # ==================================================
+
+        if self.result_count >= self.limit:
+            return
+
+        next_request = self._make_next_image_request(
+            image_urls,
+            image_index,
+            page_url,
+            next_page_url,
+        )
+
+        if next_request:
+
+            yield next_request
+
+            return
+
+        # ==================================================
+        # このページの画像を全部処理した
+        #
+        # → 次ページへ
+        # ==================================================
+
+        self.logger.info(
+            "★★★ このページの画像OCR完了 ★★★"
+        )
+
+        if next_page_url:
+
+            if self.page_count < self.max_pages:
+
+                if (
+                    next_page_url
+                    not in self.visited_pages
+                ):
+
+                    self.visited_pages.add(
+                        next_page_url
+                    )
+
+                    self.logger.info(
+                        "★★★ 次のページへ ★★★ "
+                        f"{next_page_url}"
+                    )
+
+                    yield scrapy.Request(
+                        next_page_url,
+                        callback=self.parse,
                     )
 
                     return
 
-        else:
+        self.logger.info(
+            "★★★ 次に処理できるページなし ★★★"
+        )
 
-            # --------------------------------------------------
-            # keywordが空の場合
-            #
-            # OCRテキストがある画像を結果とする
-            # --------------------------------------------------
+    # ==================================================
+    # 次の画像Requestを作る
+    # ==================================================
 
-            self.result_count += 1
+    def _make_next_image_request(
+        self,
+        image_urls,
+        current_index,
+        page_url,
+        next_page_url,
+    ):
 
-            self.logger.info(
-                "★★★ キーワード未指定 "
-                "→ OCR結果を採用 ★★★"
-            )
+        if not image_urls:
+            return None
 
-            yield {
-                "url": image_url,
-                "text": text,
-            }
+        next_index = current_index + 1
+
+        # ----------------------------------------------
+        # まだ画像がある
+        # ----------------------------------------------
+
+        if next_index < len(image_urls):
 
             if self.result_count >= self.limit:
+                return None
 
-                return
-
-        # ------------------------------------------------------
-        # ★OCRが完全終了してから次の画像へ
-        # ------------------------------------------------------
-
-        await self.process_next_image(
-            response
-        )
-
-    # ==========================================================
-    # 次の画像を処理
-    # ==========================================================
-
-    async def process_next_image(self, response):
-
-        # ------------------------------------------------------
-        # limit到達
-        # ------------------------------------------------------
-
-        if self.result_count >= self.limit:
-
-            self.logger.info(
-                "★★★ limit到達 → 次画像なし ★★★"
-            )
-
-            return
-
-        # ------------------------------------------------------
-        # 残り画像
-        # ------------------------------------------------------
-
-        queue = response.meta.get(
-            "image_queue",
-            []
-        )
-
-        source_page = response.meta.get(
-            "source_page",
-            ""
-        )
-
-        # ------------------------------------------------------
-        # 次の画像がある
-        # ------------------------------------------------------
-
-        if queue:
-
-            next_image = queue[0]
-
-            remaining = queue[1:]
+            next_url = image_urls[next_index]
 
             self.logger.info(
                 "★★★ 次の画像へ ★★★ "
-                f"{next_image}"
-            )
-
-            yield scrapy.Request(
-                url=next_image,
-                callback=self.parse_image,
-                errback=self.parse_image_error,
-                meta={
-                    "image_queue": remaining,
-                    "source_page": source_page,
-                },
-                dont_filter=True,
-            )
-
-            return
-
-        # ------------------------------------------------------
-        # ページ内画像が終了
-        # ------------------------------------------------------
-
-        self.logger.info(
-            "★★★ このページの画像OCR終了 ★★★"
-        )
-
-        # ------------------------------------------------------
-        # 次ページへ
-        # ------------------------------------------------------
-
-        fake_response = response
-
-        for request in self.next_page_request(
-            fake_response
-        ):
-
-            yield request
-
-    # ==========================================================
-    # 次のページ
-    # ==========================================================
-
-    def next_page_request(self, response):
-
-        if self.result_count >= self.limit:
-
-            return
-
-        if self.page_count >= self.max_pages:
-
-            self.logger.info(
-                "★★★ max_pages到達 ★★★"
-            )
-
-            return
-
-        links = response.css(
-            "a::attr(href)"
-        ).getall()
-
-        self.logger.info(
-            f"★★★ ページ内リンク数: "
-            f"{len(links)} ★★★"
-        )
-
-        for href in links:
-
-            next_url = urljoin(
-                response.url,
-                href
-            )
-
-            next_url = self.normalize_url(
-                next_url
-            )
-
-            # --------------------------------------------------
-            # HTTP以外
-            # --------------------------------------------------
-
-            if not next_url.startswith(
-                ("http://", "https://")
-            ):
-                continue
-
-            parsed = urlparse(next_url)
-
-            # --------------------------------------------------
-            # 同一ドメイン以外
-            # --------------------------------------------------
-
-            if (
-                self.allowed_domains
-                and parsed.hostname
-                not in self.allowed_domains
-            ):
-                continue
-
-            # --------------------------------------------------
-            # 既訪問
-            # --------------------------------------------------
-
-            if next_url in self.visited_pages:
-
-                continue
-
-            # --------------------------------------------------
-            # PDF等
-            # --------------------------------------------------
-
-            lower_url = next_url.lower()
-
-            if lower_url.endswith(
-                (
-                    ".pdf",
-                    ".zip",
-                    ".jpg",
-                    ".jpeg",
-                    ".png",
-                    ".gif",
-                    ".webp",
-                    ".svg",
-                )
-            ):
-                continue
-
-            # --------------------------------------------------
-            # 新しいページ
-            # --------------------------------------------------
-
-            self.visited_pages.add(
-                next_url
-            )
-
-            self.logger.info(
-                "★★★ 次のページ候補 ★★★ "
+                f"{next_index + 1}/{len(image_urls)} "
                 f"{next_url}"
             )
 
-            yield scrapy.Request(
-                url=next_url,
-                callback=self.parse,
-                errback=self.parse_page_error,
-            )
-
-            # --------------------------------------------------
-            # 重要:
-            #
-            # ページも一度に大量投入しない。
-            # --------------------------------------------------
-
-            return
-
-        self.logger.info(
-            "★★★ 次に進めるページがありません ★★★"
-        )
-
-    # ==========================================================
-    # 画像URL抽出
-    # ==========================================================
-
-    def extract_image_urls(self, response):
-
-        candidates = []
-
-        # ------------------------------------------------------
-        # 通常のsrc
-        # ------------------------------------------------------
-
-        candidates.extend(
-            response.css(
-                "img::attr(src)"
-            ).getall()
-        )
-
-        # ------------------------------------------------------
-        # lazy load
-        # ------------------------------------------------------
-
-        for attr in [
-            "data-src",
-            "data-lazy-src",
-            "data-original",
-            "data-image",
-        ]:
-
-            candidates.extend(
-                response.css(
-                    f"img::attr({attr})"
-                ).getall()
-            )
-
-        # ------------------------------------------------------
-        # srcset
-        # ------------------------------------------------------
-
-        srcsets = response.css(
-            "img::attr(srcset)"
-        ).getall()
-
-        for srcset in srcsets:
-
-            for item in srcset.split(","):
-
-                item = item.strip()
-
-                if not item:
-                    continue
-
-                parts = item.split()
-
-                if parts:
-                    candidates.append(
-                        parts[0]
-                    )
-
-        # ------------------------------------------------------
-        # URL変換・重複除去
-        # ------------------------------------------------------
-
-        results = []
-
-        local_seen = set()
-
-        for src in candidates:
-
-            if not src:
-                continue
-
-            src = src.strip()
-
-            if not src:
-                continue
-
-            if src.startswith(
-                (
-                    "data:",
-                    "javascript:",
-                    "#"
-                )
-            ):
-                continue
-
-            image_url = urljoin(
-                response.url,
-                src
-            )
-
-            image_url = self.normalize_url(
-                image_url
-            )
-
-            parsed = urlparse(
-                image_url
-            )
-
-            if parsed.scheme not in (
-                "http",
-                "https"
-            ):
-                continue
-
-            # --------------------------------------------------
-            # SVG除外
-            # --------------------------------------------------
-
-            if image_url.lower().split("?")[0].endswith(
-                ".svg"
-            ):
-                continue
-
-            if image_url in local_seen:
-                continue
-
-            local_seen.add(
-                image_url
-            )
-
-            # Spider全体でも重複除去
-            if image_url in self.seen_images:
-                continue
-
-            self.seen_images.add(
-                image_url
-            )
-
-            self.image_found_count += 1
-
-            self.logger.info(
-                "★★★ 画像発見 ★★★ "
-                f"{image_url}"
-            )
-
-            results.append(
-                image_url
-            )
-
-        return results
-
-    # ==========================================================
-    # 画像取得エラー
-    # ==========================================================
-
-    async def parse_image_error(
-        self,
-        failure
-    ):
-
-        request = failure.request
-
-        image_url = request.url
-
-        self.logger.warning(
-            "★★★ 画像取得失敗 ★★★ "
-            f"{image_url}"
-        )
-
-        queue = request.meta.get(
-            "image_queue",
-            []
-        )
-
-        source_page = request.meta.get(
-            "source_page",
-            ""
-        )
-
-        # ------------------------------------------------------
-        # 次の画像へ
-        # ------------------------------------------------------
-
-        if (
-            self.result_count < self.limit
-            and queue
-        ):
-
-            next_image = queue[0]
-
-            remaining = queue[1:]
-
-            self.logger.info(
-                "★★★ 取得失敗 → 次の画像へ ★★★ "
-                f"{next_image}"
-            )
-
-            yield scrapy.Request(
-                url=next_image,
+            return scrapy.Request(
+                next_url,
                 callback=self.parse_image,
-                errback=self.parse_image_error,
                 meta={
-                    "image_queue": remaining,
-                    "source_page": source_page,
+                    "img_url": next_url,
+                    "page_url": page_url,
+                    "image_urls": image_urls,
+                    "image_index": next_index,
+                    "next_page_url": next_page_url,
                 },
                 dont_filter=True,
             )
 
+        return None
+
+    # ==================================================
+    # 次ページRequest
+    # ==================================================
+
+    def _make_next_page_request(
+        self,
+        next_page_url
+    ):
+
+        if not next_page_url:
             return
 
-        # ------------------------------------------------------
-        # 画像終了 → 次ページ
-        # ------------------------------------------------------
+        if self.result_count >= self.limit:
+            return
 
-        if source_page:
+        if self.page_count >= self.max_pages:
+            return
 
-            for req in self.next_page_request_by_url(
-                source_page
-            ):
+        if next_page_url in self.visited_pages:
+            return
 
-                yield req
-
-    # ==========================================================
-    # 画像取得失敗時の次ページ処理
-    # ==========================================================
-
-    def next_page_request_by_url(
-        self,
-        source_page
-    ):
-
-        # ------------------------------------------------------
-        # ここでは元ページのHTMLを再取得しない。
-        #
-        # 画像取得失敗時は、ページを終了させる。
-        # 次ページ探索はCrawlerのページキューに任せる。
-        # ------------------------------------------------------
+        self.visited_pages.add(
+            next_page_url
+        )
 
         self.logger.info(
-            "★★★ 画像処理終了 ★★★ "
-            f"source={source_page}"
+            "★★★ 次のページへ ★★★ "
+            f"{next_page_url}"
         )
 
-        return []
-
-    # ==========================================================
-    # ページ取得エラー
-    # ==========================================================
-
-    def parse_page_error(
-        self,
-        failure
-    ):
-
-        self.logger.warning(
-            "★★★ ページ取得失敗 ★★★ "
-            f"{failure.request.url}"
+        yield scrapy.Request(
+            next_page_url,
+            callback=self.parse,
         )
 
-    # ==========================================================
+    # ==================================================
     # Gemini OCR
-    # ==========================================================
+    # ==================================================
 
-    def _ocr_bytes(
-        self,
-        image_bytes
-    ):
+    def _ocr_bytes(self, img_bytes):
 
-        # ------------------------------------------------------
-        # PILで画像確認
-        # ------------------------------------------------------
+        # ----------------------------------------------
+        # Gemini APIを完全直列化
+        # ----------------------------------------------
 
-        try:
+        with self.gemini_lock:
 
-            image = Image.open(
-                io.BytesIO(image_bytes)
+            # ------------------------------------------
+            # 14秒間隔
+            # ------------------------------------------
+
+            now = time.monotonic()
+
+            elapsed = (
+                now - self.last_gemini_call
             )
 
-            image.load()
+            if elapsed < self.GEMINI_INTERVAL:
 
-        except Exception as e:
-
-            return (
-                "ERROR_IMAGE:"
-                f"{type(e).__name__}: {e}"
-            )
-
-        # ------------------------------------------------------
-        # OCRプロンプト
-        # ------------------------------------------------------
-
-        prompt = """
-この画像に含まれている文字を読み取ってください。
-
-日本語が含まれている場合は、日本語をできるだけ正確に
-そのまま文字起こししてください。
-
-文字が存在しない場合は、
-NO_TEXT
-とだけ返してください。
-
-画像内の文字だけを対象にしてください。
-説明や感想は不要です。
-""".strip()
-
-        # ------------------------------------------------------
-        # Gemini API
-        # ------------------------------------------------------
-
-        for attempt in range(
-            1,
-            self.GEMINI_MAX_RETRIES + 2
-        ):
-
-            try:
-
-                # ==============================================
-                # RPM対策
-                # ==============================================
-
-                elapsed = (
-                    time.monotonic()
-                    - self.last_gemini_call
-                )
-
-                wait_seconds = (
+                wait_time = (
                     self.GEMINI_INTERVAL
                     - elapsed
                 )
 
-                if wait_seconds > 0:
-
-                    self.logger.info(
-                        "★★★ Gemini API待機 ★★★ "
-                        f"{wait_seconds:.1f}秒"
-                    )
-
-                    time.sleep(
-                        wait_seconds
-                    )
-
-                self.last_gemini_call = (
-                    time.monotonic()
-                )
-
                 self.logger.info(
-                    "★★★ Gemini API呼び出し ★★★ "
-                    f"attempt={attempt}/"
-                    f"{self.GEMINI_MAX_RETRIES + 1}"
-                )
-
-                response = (
-                    self.gemini_client.models.generate_content(
-                        model=self.MODEL_NAME,
-                        contents=[
-                            prompt,
-                            image,
-                        ],
-                    )
-                )
-
-                self.logger.info(
-                    "★★★ Gemini API応答受信 ★★★"
-                )
-
-                # --------------------------------------------------
-                # テキスト取得
-                # --------------------------------------------------
-
-                text = getattr(
-                    response,
-                    "text",
-                    None
-                )
-
-                if text is None:
-
-                    return "NO_TEXT"
-
-                text = str(text).strip()
-
-                if not text:
-
-                    return "NO_TEXT"
-
-                # --------------------------------------------------
-                # NO_TEXT
-                # --------------------------------------------------
-
-                if self._looks_like_no_text(
-                    text
-                ):
-
-                    return "NO_TEXT"
-
-                return text
-
-            except Exception as e:
-
-                error_text = str(e)
-
-                error_lower = (
-                    error_text.lower()
-                )
-
-                # --------------------------------------------------
-                # リトライ対象
-                # --------------------------------------------------
-
-                retryable = any(
-                    x in error_lower
-                    for x in [
-                        "429",
-                        "resource_exhausted",
-                        "503",
-                        "unavailable",
-                        "500",
-                        "internal",
-                        "502",
-                        "bad_gateway",
-                        "504",
-                        "deadline_exceeded",
-                        "high demand",
-                        "temporarily unavailable",
-                        "temporary error",
-                    ]
-                )
-
-                # --------------------------------------------------
-                # リトライ回数終了
-                # --------------------------------------------------
-
-                if (
-                    not retryable
-                    or attempt
-                    > self.GEMINI_MAX_RETRIES
-                ):
-
-                    self.logger.error(
-                        "★★★ Gemini OCR失敗 ★★★ "
-                        f"{error_text}"
-                    )
-
-                    return (
-                        "ERROR_GEMINI:"
-                        f"{error_text}"
-                    )
-
-                # --------------------------------------------------
-                # RetryInfoから待機時間取得
-                # --------------------------------------------------
-
-                retry_seconds = (
-                    self._extract_retry_seconds(
-                        error_text
-                    )
-                )
-
-                if retry_seconds is None:
-
-                    retry_seconds = (
-                        self.DEFAULT_RETRY_SECONDS
-                    )
-
-                self.logger.warning(
-                    "★★★ Gemini APIリトライ ★★★ "
-                    f"{retry_seconds}秒後 "
-                    f"attempt={attempt + 1}"
+                    "★★★ Gemini API間隔調整 ★★★ "
+                    f"{wait_time:.1f}秒待機"
                 )
 
                 time.sleep(
-                    retry_seconds
+                    wait_time
                 )
 
-        return "ERROR_GEMINI:unknown"
+            # ------------------------------------------
+            # 画像読み込み
+            # ------------------------------------------
 
-    # ==========================================================
+            try:
+
+                image = Image.open(
+                    io.BytesIO(img_bytes)
+                )
+
+                image.load()
+
+            except Exception as e:
+
+                self.logger.warning(
+                    f"画像読み込みエラー: {e}"
+                )
+
+                return (
+                    f"ERROR_IMAGE:{e}"
+                )
+
+            # ------------------------------------------
+            # OCRプロンプト
+            # ------------------------------------------
+
+            prompt_text = """
+この画像に含まれる日本語テキストだけを正確に抽出してください。
+
+重要なルール：
+
+1. 画像内に日本語の文字が存在する場合
+   → 画像に実際に書かれている日本語テキストだけを返してください。
+
+2. 画像内に日本語テキストが存在しない場合
+   → 必ず NO_TEXT とだけ返してください。
+
+3. 「この画像には日本語テキストがありません」
+   「日本語テキストは含まれていません」
+   などの説明文は絶対に返さないでください。
+
+4. 画像の内容の説明、推測、解説は不要です。
+
+5. 日本語テキストが存在する場合は、
+   抽出した文字だけを返してください。
+""".strip()
+
+            # ------------------------------------------
+            # Gemini API
+            # ------------------------------------------
+
+            for attempt in range(
+                self.GEMINI_MAX_RETRIES + 1
+            ):
+
+                try:
+
+                    self.logger.info(
+                        "★★★ Gemini API呼び出し ★★★ "
+                        f"attempt={attempt + 1}/"
+                        f"{self.GEMINI_MAX_RETRIES + 1}"
+                    )
+
+                    # API呼び出し時刻
+                    self.last_gemini_call = (
+                        time.monotonic()
+                    )
+
+                    response = (
+                        self.gemini_client
+                        .models
+                        .generate_content(
+                            model=self.MODEL_NAME,
+                            contents=[
+                                prompt_text,
+                                image,
+                            ],
+                        )
+                    )
+
+                    self.logger.info(
+                        "★★★ Gemini API応答受信 ★★★"
+                    )
+
+                    if (
+                        response
+                        and response.text
+                    ):
+
+                        text = (
+                            response.text
+                            .strip()
+                        )
+
+                        if text.upper() == "NO_TEXT":
+
+                            return "NO_TEXT"
+
+                        if self._looks_like_no_text(
+                            text
+                        ):
+
+                            self.logger.info(
+                                "★★★ Geminiの"
+                                "「文字なし」説明文を"
+                                "NO_TEXTとして処理 ★★★"
+                            )
+
+                            return "NO_TEXT"
+
+                        return text
+
+                    return "NO_TEXT"
+
+                except Exception as e:
+
+                    error_text = str(e)
+
+                    self.logger.error(
+                        "★★★ Gemini APIエラー ★★★ "
+                        f"{error_text}"
+                    )
+
+                    # ----------------------------------
+                    # リトライ対象
+                    # ----------------------------------
+
+                    is_retryable = (
+                        "429" in error_text
+                        or
+                        "RESOURCE_EXHAUSTED"
+                        in error_text
+                        or
+                        "503" in error_text
+                        or
+                        "UNAVAILABLE"
+                        in error_text
+                        or
+                        "high demand"
+                        in error_text.lower()
+                        or
+                        "500" in error_text
+                        or
+                        "INTERNAL" in error_text
+                    )
+
+                    if not is_retryable:
+
+                        return (
+                            f"ERROR_GEMINI:"
+                            f"{error_text}"
+                        )
+
+                    # ----------------------------------
+                    # 最終試行
+                    # ----------------------------------
+
+                    if (
+                        attempt
+                        >= self.GEMINI_MAX_RETRIES
+                    ):
+
+                        self.logger.error(
+                            "★★★ Geminiリトライ上限到達 ★★★"
+                        )
+
+                        return (
+                            f"ERROR_GEMINI:"
+                            f"{error_text}"
+                        )
+
+                    # ----------------------------------
+                    # 待機時間
+                    # ----------------------------------
+
+                    wait_time = (
+                        self._extract_retry_seconds(
+                            error_text
+                        )
+                    )
+
+                    if wait_time is None:
+
+                        if (
+                            "503" in error_text
+                            or
+                            "UNAVAILABLE"
+                            in error_text
+                            or
+                            "high demand"
+                            in error_text.lower()
+                        ):
+                            wait_time = 10
+                        else:
+                            wait_time = 45
+
+                    # 少し余裕を持つ
+                    wait_time += 2
+
+                    self.logger.warning(
+                        "★★★ Geminiリトライ待機 ★★★ "
+                        f"{wait_time:.1f}秒"
+                    )
+
+                    time.sleep(
+                        wait_time
+                    )
+
+            return (
+                "ERROR_GEMINI:Unknown error"
+            )
+
+    # ==================================================
     # NO_TEXT判定
-    # ==========================================================
+    # ==================================================
 
     def _looks_like_no_text(
         self,
@@ -1368,83 +1231,84 @@ NO_TEXT
     ):
 
         normalized = (
-            text.strip()
-            .replace("`", "")
-            .replace("*", "")
-            .strip()
+            text
+            .replace(" ", "")
+            .replace("　", "")
+            .replace("\n", "")
         )
 
-        return normalized.upper() in [
-            "NO_TEXT",
-            "NO TEXT",
-            "NO TEXT FOUND",
-            "文字なし",
-            "テキストなし",
+        no_text_patterns = [
+
+            "日本語テキストは含まれていません",
+            "日本語テキストが含まれていません",
+            "日本語のテキストは含まれていません",
+            "日本語の文字は含まれていません",
+            "日本語文字は含まれていません",
+
+            "日本語テキストがありません",
+            "日本語テキストはありません",
+            "日本語の文字がありません",
+            "日本語の文字はありません",
+
+            "文字は含まれていません",
+            "文字が含まれていません",
+            "テキストは含まれていません",
+            "テキストが含まれていません",
+            "テキストはありません",
+            "文字はありません",
         ]
 
-    # ==========================================================
-    # Retry秒数抽出
-    # ==========================================================
+        for pattern in no_text_patterns:
+
+            if pattern in normalized:
+                return True
+
+        return False
+
+    # ==================================================
+    # Retry-After取得
+    # ==================================================
 
     def _extract_retry_seconds(
         self,
-        text
+        error_text
     ):
 
         patterns = [
-            r"retryDelay[\"']?\s*[:=]\s*[\"']?(\d+)s",
-            r"retry after\s+(\d+)\s*seconds?",
-            r"retry in\s+(\d+)\s*seconds?",
-            r"after\s+(\d+)\s*seconds?",
-            r"(\d+)\s*s",
+
+            r"retry in ([0-9.]+)s",
+
+            r"retryDelay.*?([0-9.]+)s",
+
+            r"Retry-After.*?([0-9.]+)",
+
         ]
 
         for pattern in patterns:
 
             match = re.search(
                 pattern,
-                text,
-                flags=re.IGNORECASE
+                error_text,
+                re.IGNORECASE
             )
 
             if match:
 
                 try:
 
-                    return int(
+                    return float(
                         match.group(1)
                     )
 
-                except (
-                    ValueError,
-                    TypeError
-                ):
+                except ValueError:
 
                     pass
 
         return None
 
-    # ==========================================================
-    # URL正規化
-    # ==========================================================
-
-    def normalize_url(
-        self,
-        url
-    ):
-
-        url = url.strip()
-
-        # フラグメント除去
-        parsed = urlparse(url)
-
-        return parsed._replace(
-            fragment=""
-        ).geturl()
-
-    # ==========================================================
+    # ==================================================
     # Spider終了
-    # ==========================================================
+    # ==================================================
 
     def closed(self, reason):
 
@@ -1469,7 +1333,7 @@ NO_TEXT
         )
 
         self.logger.info(
-            f"画像取得={self.image_downloaded_count}"
+            f"画像取得={self.image_fetched_count}"
         )
 
         self.logger.info(
@@ -1485,7 +1349,12 @@ NO_TEXT
         )
 
         self.logger.info(
-            f"キーワード一致結果={self.result_count}"
+            f"キーワード一致結果="
+            f"{self.keyword_match_count}"
+        )
+
+        self.logger.info(
+            f"取得結果={self.result_count}"
         )
 
         self.logger.info(
@@ -1495,5 +1364,3 @@ NO_TEXT
         self.logger.info(
             "===================================="
         )
-        
-        
