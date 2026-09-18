@@ -1,25 +1,21 @@
-import asyncio
-import json
-import os
-import signal
-import sys
-import uuid
-
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+import subprocess
+import uuid
+import os
+import json
+import sys
+import signal
+import asyncio
 
-# ==========================================================
-# FastAPI
-# ==========================================================
 
 app = FastAPI()
 
-
-# ==========================================================
+# ==================================================
 # パス
-# ==========================================================
+# ==================================================
 
 BASE_DIR = os.path.dirname(
     os.path.abspath(__file__)
@@ -32,7 +28,6 @@ templates = Jinja2Templates(
     )
 )
 
-# Scrapyプロジェクト
 SCRAPY_DIR = os.path.join(
     BASE_DIR,
     "spocr",
@@ -40,44 +35,35 @@ SCRAPY_DIR = os.path.join(
 )
 
 
-# ==========================================================
+# ==================================================
 # トップページ
-# ==========================================================
+# ==================================================
 
 @app.get(
     "/",
     response_class=HTMLResponse
 )
-def read_root(
-    request: Request
-):
+def read_root(request: Request):
 
     return templates.TemplateResponse(
-        "index.html",
-        {
+        request=request,
+        name="index.html",
+        context={
             "request": request
         }
     )
 
 
-# ==========================================================
+# ==================================================
 # プロセス終了
-# ==========================================================
+# ==================================================
 
-async def terminate_process(
+def terminate_process(
     process
 ):
 
-    if process.returncode is not None:
+    if process.poll() is not None:
         return
-
-    print(
-        "===================================="
-    )
-
-    print(
-        "★★★ Scrapyプロセスを終了します ★★★"
-    )
 
     try:
 
@@ -87,153 +73,81 @@ async def terminate_process(
 
         else:
 
-            # --------------------------------------------------
-            # Unix系
-            #
-            # RenderはLinuxなのでこちらが基本
-            # --------------------------------------------------
+            # Render/Linux
+            # 子プロセスも含めて終了
 
-            try:
-
-                os.killpg(
-                    process.pid,
-                    signal.SIGTERM
-                )
-
-            except ProcessLookupError:
-
-                pass
-
-    except Exception as e:
-
-        print(
-            f"プロセス終了処理エラー: {e}"
-        )
-
-    # ----------------------------------------------------------
-    # Graceful shutdown待機
-    # ----------------------------------------------------------
-
-    try:
-
-        await asyncio.wait_for(
-            process.wait(),
-            timeout=10
-        )
-
-        return
-
-    except asyncio.TimeoutError:
-
-        print(
-            "Scrapyが終了しないため強制終了します"
-        )
-
-    # ----------------------------------------------------------
-    # 強制終了
-    # ----------------------------------------------------------
-
-    try:
-
-        if os.name == "nt":
-
-            process.kill()
-
-        else:
-
-            try:
-
-                os.killpg(
-                    process.pid,
-                    signal.SIGKILL
-                )
-
-            except ProcessLookupError:
-
-                pass
-
-    except Exception as e:
-
-        print(
-            f"強制終了エラー: {e}"
-        )
-
-    try:
-
-        await process.wait()
+            os.killpg(
+                os.getpgid(
+                    process.pid
+                ),
+                signal.SIGTERM
+            )
 
     except Exception:
 
-        pass
+        try:
+            process.terminate()
+        except Exception:
+            pass
 
 
-# ==========================================================
-# /crawl
-# ==========================================================
+# ==================================================
+# Scrapy実行
+# ==================================================
 
 @app.get("/crawl")
 async def crawl(
-
-    url: str = Query(
-        ...,
-        description="クロール開始URL"
-    ),
-
-    keyword: str = Query(
-        "",
-        description="OCR検索キーワード"
-    ),
-
-    limit: int = Query(
-        5,
-        ge=1,
-        le=100,
-        description="最大結果件数"
-    ),
-
-    max_pages: int = Query(
-        30,
-        ge=1,
-        le=1000,
-        description="最大ページ数"
-    ),
-
+    url: str = Query(...),
+    keyword: str = Query(""),
+    limit: int = Query(5, ge=1),
+    max_pages: int = Query(30, ge=1),
     timeout_seconds: int = Query(
         300,
-        ge=30,
-        le=3600,
-        description="Scrapy最大実行時間"
+        ge=10
     ),
 ):
 
-    # ========================================================
-    # 入力チェック
-    # ========================================================
+    # ----------------------------------------------
+    # URLチェック
+    # ----------------------------------------------
 
-    url = url.strip()
-
-    keyword = keyword.strip()
-
-    if not url.startswith(
-        (
-            "http://",
-            "https://"
-        )
+    if not (
+        url.startswith("http://")
+        or
+        url.startswith("https://")
     ):
 
         return JSONResponse(
+            status_code=400,
             content={
-                "error": "URLはhttp://またはhttps://で指定してください"
-            },
-            status_code=400
+                "error":
+                    "URLはhttp://またはhttps://"
+                    "で指定してください"
+            }
         )
 
-    # ========================================================
+    # ----------------------------------------------
+    # limit / max_pages
+    # ----------------------------------------------
+
+    limit = max(
+        1,
+        int(limit)
+    )
+
+    max_pages = max(
+        1,
+        int(max_pages)
+    )
+
+    # ----------------------------------------------
     # 出力ファイル
-    # ========================================================
+    # ----------------------------------------------
 
     output_file = (
-        f"output_{uuid.uuid4().hex}.json"
+        f"output_"
+        f"{uuid.uuid4().hex}"
+        f".json"
     )
 
     output_path = os.path.join(
@@ -241,14 +155,17 @@ async def crawl(
         output_file
     )
 
-    # ========================================================
+    # ----------------------------------------------
     # Scrapyコマンド
-    # ========================================================
+    # ----------------------------------------------
 
     cmd = [
+
         sys.executable,
+
         "-m",
         "scrapy",
+
         "crawl",
         "crawler",
 
@@ -268,206 +185,201 @@ async def crawl(
         output_path,
     ]
 
-    print(
-        "===================================="
-    )
-
-    print(
-        "★★★ Scrapy開始 ★★★"
-    )
-
-    print(
-        f"URL={url}"
-    )
-
-    print(
-        f"keyword={keyword}"
-    )
-
-    print(
-        f"limit={limit}"
-    )
-
-    print(
-        f"max_pages={max_pages}"
-    )
-
-    print(
-        f"timeout_seconds={timeout_seconds}"
-    )
-
-    print(
-        "===================================="
-    )
-
     process = None
 
     try:
 
-        # ====================================================
+        # ==========================================
         # Scrapy起動
-        #
-        # stdoutとstderrをまとめて取得
-        # ====================================================
+        # ==========================================
 
-        if os.name == "nt":
+        process = await asyncio.create_subprocess_exec(
 
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=SCRAPY_DIR,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
+            *cmd,
 
-        else:
+            cwd=SCRAPY_DIR,
 
-            # Render/Linux
-            # プロセスグループを作る
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=SCRAPY_DIR,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                start_new_session=True,
-            )
+            stdout=asyncio.subprocess.PIPE,
 
-        # ====================================================
-        # Scrapyログをリアルタイム表示
-        # ====================================================
+            stderr=asyncio.subprocess.STDOUT,
 
-        async def read_output():
+            start_new_session=(
+                os.name != "nt"
+            ),
+        )
+
+        logs = []
+
+        # ------------------------------------------
+        # ログ読み取り
+        # ------------------------------------------
+
+        async def read_logs():
 
             while True:
 
                 line = await process.stdout.readline()
 
                 if not line:
-
                     break
 
-                try:
-
-                    decoded = line.decode(
+                text = (
+                    line
+                    .decode(
                         "utf-8",
                         errors="replace"
-                    ).rstrip()
-
-                except Exception:
-
-                    decoded = str(line)
-
-                print(
-                    f"[Scrapy] {decoded}"
+                    )
+                    .rstrip()
                 )
 
-        output_task = asyncio.create_task(
-            read_output()
-        )
+                logs.append(text)
 
-        # ====================================================
-        # タイムアウト付きでScrapy終了を待つ
-        # ====================================================
+                # Renderログにも表示
+                print(
+                    f"[Scrapy] {text}",
+                    flush=True
+                )
+
+        # ==========================================
+        # Scrapy実行
+        # ==========================================
+
+        log_task = asyncio.create_task(
+            read_logs()
+        )
 
         try:
 
-            await asyncio.wait_for(
+            return_code = await asyncio.wait_for(
                 process.wait(),
                 timeout=timeout_seconds
             )
 
         except asyncio.TimeoutError:
 
-            print(
-                "===================================="
-            )
+            # --------------------------------------
+            # タイムアウト
+            # --------------------------------------
 
-            print(
-                "★★★ Scrapyタイムアウト ★★★"
-            )
-
-            print(
-                f"{timeout_seconds}秒経過"
-            )
-
-            print(
-                "===================================="
-            )
-
-            await terminate_process(
+            terminate_process(
                 process
             )
 
-            await output_task
+            try:
+
+                await asyncio.wait_for(
+                    process.wait(),
+                    timeout=10
+                )
+
+            except asyncio.TimeoutError:
+
+                try:
+
+                    if os.name == "nt":
+                        process.kill()
+
+                    else:
+
+                        os.killpg(
+                            os.getpgid(
+                                process.pid
+                            ),
+                            signal.SIGKILL
+                        )
+
+                except Exception:
+                    pass
+
+            try:
+
+                await asyncio.wait_for(
+                    log_task,
+                    timeout=5
+                )
+
+            except asyncio.TimeoutError:
+
+                log_task.cancel()
 
             return JSONResponse(
+                status_code=504,
                 content={
-                    "error": "Scrapy execution timed out.",
-                    "timeout_seconds": timeout_seconds,
-                    "limit": limit,
-                    "max_pages": max_pages,
-                },
-                status_code=504
+                    "error":
+                        "Scrapy execution timed out.",
+                    "timeout_seconds":
+                        timeout_seconds,
+                    "limit":
+                        limit,
+                    "max_pages":
+                        max_pages,
+                }
             )
 
-        # ====================================================
-        # ログ読み取り完了
-        # ====================================================
+        await log_task
 
-        await output_task
-
-        # ====================================================
-        # 終了コード確認
-        # ====================================================
-
-        return_code = process.returncode
+        # ==========================================
+        # Scrapy終了確認
+        # ==========================================
 
         print(
-            "===================================="
+            "====================================",
+            flush=True
         )
 
         print(
-            "★★★ Scrapy終了 ★★★"
+            "★★★ Scrapy終了 ★★★",
+            flush=True
         )
 
         print(
-            f"return_code={return_code}"
+            f"return_code={return_code}",
+            flush=True
         )
 
         print(
-            "===================================="
+            "====================================",
+            flush=True
         )
+
+        # ------------------------------------------
+        # プロセスエラー
+        # ------------------------------------------
 
         if return_code != 0:
 
+            # 後ろのログだけ返す
+            error_logs = logs[-100:]
+
             return JSONResponse(
+                status_code=500,
                 content={
-                    "error": "Scrapy failed",
-                    "return_code": return_code,
-                },
-                status_code=500
+                    "error":
+                        "Scrapy failed",
+                    "return_code":
+                        return_code,
+                    "details":
+                        "\n".join(error_logs),
+                }
             )
 
-        # ====================================================
-        # JSON確認
-        # ====================================================
+        # ==========================================
+        # JSON読み込み
+        # ==========================================
 
         if not os.path.exists(
             output_path
         ):
 
             return JSONResponse(
+                status_code=500,
                 content={
-                    "error": (
+                    "error":
                         "Scrapy completed, "
-                        "but output file was not generated."
-                    )
-                },
-                status_code=500
+                        "but output file was "
+                        "not generated."
+                }
             )
-
-        # ====================================================
-        # JSON読み込み
-        # ====================================================
 
         try:
 
@@ -482,16 +394,19 @@ async def crawl(
         except Exception as e:
 
             return JSONResponse(
+                status_code=500,
                 content={
-                    "error": "Output JSON could not be read.",
-                    "details": str(e),
-                },
-                status_code=500
+                    "error":
+                        "JSON result could "
+                        "not be read.",
+                    "details":
+                        str(e),
+                }
             )
 
-        # ====================================================
-        # データ形式確認
-        # ====================================================
+        # ==========================================
+        # JSON形式確認
+        # ==========================================
 
         if not isinstance(
             data,
@@ -499,26 +414,23 @@ async def crawl(
         ):
 
             return JSONResponse(
+                status_code=500,
                 content={
-                    "error": (
-                        "Scrapy output is not a JSON list."
-                    )
-                },
-                status_code=500
+                    "error":
+                        "Scrapy output is "
+                        "not a list."
+                }
             )
 
-        # ====================================================
-        # 最終的なlimitチェック
+        # ==========================================
+        # 最終limit適用
         #
-        # ★重要★
-        #
-        # crawler側だけでなく、
-        # FastAPI側でもlimitを保証する。
-        # ====================================================
+        # 念のためAPI側でも制限
+        # ==========================================
 
         if keyword:
 
-            filtered = []
+            filtered_data = []
 
             for item in data:
 
@@ -533,92 +445,48 @@ async def crawl(
                     ""
                 )
 
-                if not isinstance(
-                    text,
-                    str
-                ):
-                    continue
-
                 if keyword in text:
 
-                    filtered.append(
+                    filtered_data.append(
                         item
                     )
 
-            data = filtered
+            data = filtered_data
 
-        # ----------------------------------------------------
-        # 最終limit
-        # ----------------------------------------------------
-
+        # 最終的に必ずlimit件以下
         data = data[:limit]
 
-        # ====================================================
-        # レスポンス
-        # ====================================================
-
-        result = {
-            "results": data,
-            "meta": {
-                "result_count": len(data),
-                "limit": limit,
-                "max_pages": max_pages,
-                "timeout_seconds": timeout_seconds,
-                "keyword": keyword,
-            }
-        }
+        # ==========================================
+        # 結果
+        # ==========================================
 
         return JSONResponse(
-            content=result
+            status_code=200,
+            content={
+                "results": data,
+                "count": len(data),
+                "limit": limit,
+                "max_pages": max_pages,
+            }
         )
 
     except Exception as e:
 
-        print(
-            "===================================="
-        )
-
-        print(
-            "★★★ /crawl エラー ★★★"
-        )
-
-        print(
-            repr(e)
-        )
-
-        print(
-            "===================================="
-        )
-
-        # ----------------------------------------------------
-        # 実行中なら終了
-        # ----------------------------------------------------
-
-        if process is not None:
-
-            try:
-
-                await terminate_process(
-                    process
-                )
-
-            except Exception:
-
-                pass
-
         return JSONResponse(
+            status_code=500,
             content={
-                "error": "Scrapy failed",
-                "details": str(e),
-            },
-            status_code=500
+                "error":
+                    "Unexpected server error.",
+                "details":
+                    str(e),
+            }
         )
 
     finally:
 
-        # ====================================================
-        # 一時JSON削除
-        # ====================================================
+        # ==========================================
+        # 出力ファイル削除
+        # ==========================================
 
         try:
 
@@ -630,8 +498,6 @@ async def crawl(
                     output_path
                 )
 
-        except Exception as e:
+        except Exception:
 
-            print(
-                f"一時ファイル削除失敗: {e}"
-            )
+            pass
