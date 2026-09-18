@@ -32,7 +32,7 @@ class CrawlerSpider(scrapy.Spider):
     #
     # 5 RPM程度を想定して、かなり余裕を持たせる。
     # 変更したい場合はここを変更する。
-    GEMINI_INTERVAL = 1
+    GEMINI_INTERVAL = 14
 
     # 429 / 503等の最大リトライ回数
     GEMINI_MAX_RETRIES = 3
