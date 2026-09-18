@@ -2,90 +2,803 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>画像内文字検索</title>
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>画像OCR検索</title>
+
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 800px;
-            margin: 30px auto;
+        * {
+            box-sizing: border-box;
         }
-        input, button {
-            padding: 8px;
-            margin: 5px 0;
+
+        body {
+            font-family:
+                -apple-system,
+                BlinkMacSystemFont,
+                "Segoe UI",
+                "Hiragino Kaku Gothic ProN",
+                "Yu Gothic",
+                Meiryo,
+                sans-serif;
+
+            margin: 0;
+            padding: 0;
+
+            background: #f5f5f5;
+            color: #333;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 40px auto;
+            padding: 30px;
+
+            background: white;
+            border-radius: 12px;
+
+            box-shadow:
+                0 2px 10px rgba(0, 0, 0, 0.08);
+        }
+
+        h1 {
+            margin-top: 0;
+            margin-bottom: 30px;
+
+            text-align: center;
+            font-size: 28px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+
+            margin-bottom: 8px;
+
+            font-weight: bold;
+        }
+
+        input[type="text"],
+        input[type="url"],
+        input[type="number"] {
             width: 100%;
+
+            padding: 12px;
+
+            border: 1px solid #ccc;
+            border-radius: 6px;
+
             font-size: 16px;
         }
+
+        input:focus {
+            outline: none;
+            border-color: #666;
+        }
+
+        .settings-row {
+            display: grid;
+
+            grid-template-columns:
+                1fr 1fr;
+
+            gap: 20px;
+        }
+
+        .description {
+            margin-top: 5px;
+
+            font-size: 13px;
+            color: #777;
+        }
+
         button {
-            background: #4CAF50;
-            color: white;
+            width: 100%;
+
+            padding: 14px;
+
             border: none;
+            border-radius: 6px;
+
+            background: #333;
+            color: white;
+
+            font-size: 16px;
+            font-weight: bold;
+
             cursor: pointer;
         }
-        .result {
-            margin-top: 20px;
-            padding: 12px;
-            border: 1px solid #ccc;
+
+        button:hover {
+            background: #555;
         }
-        img {
-            max-width: 300px;
+
+        button:disabled {
+            background: #aaa;
+            cursor: not-allowed;
+        }
+
+        #status {
+            margin-top: 25px;
+            padding: 15px;
+
+            border-radius: 6px;
+
+            background: #f0f0f0;
+
+            white-space: pre-wrap;
+        }
+
+        #results {
+            margin-top: 30px;
+        }
+
+        .result {
+            margin-bottom: 20px;
+            padding: 20px;
+
+            border: 1px solid #ddd;
+            border-radius: 8px;
+
+            background: #fafafa;
+        }
+
+        .result img {
+            display: block;
+
+            max-width: 100%;
+            max-height: 400px;
+
+            margin-bottom: 15px;
+
+            border-radius: 6px;
+        }
+
+        .result-title {
+            margin-bottom: 8px;
+
+            font-weight: bold;
+        }
+
+        .result-text {
+            padding: 12px;
+
+            background: white;
+
+            border: 1px solid #ddd;
+            border-radius: 6px;
+
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .result-link {
+            display: inline-block;
+
             margin-top: 10px;
+
+            color: #333;
+            text-decoration: underline;
+
+            word-break: break-all;
+        }
+
+        .error {
+            background: #ffecec;
+            color: #b00020;
+        }
+
+        .success {
+            background: #eef8ee;
+        }
+
+        @media (max-width: 600px) {
+
+            .container {
+                margin: 20px 10px;
+                padding: 20px;
+            }
+
+            .settings-row {
+                grid-template-columns: 1fr;
+                gap: 0;
+            }
+
+            h1 {
+                font-size: 24px;
+            }
         }
     </style>
 </head>
+
 <body>
-    <h1>画像内文字検索</h1>
 
-    <label>URL（開始地点）</label>
-    <input id="url" placeholder="https://example.com/" />
+<div class="container">
 
-    <label>キーワード（含まれるテキストを表示 / 空欄可）</label>
-    <input id="keyword" placeholder="検索" />
+    <h1>画像OCR検索</h1>
 
-    <label>取得画像数</label>
-    <input id="limit" type="number" value="5" />
+    <!-- URL -->
+    <div class="form-group">
 
-    <button onclick="startCrawl()">検索開始</button>
+        <label for="url">
+            検索対象URL
+        </label>
 
+        <input
+            type="url"
+            id="url"
+            placeholder="https://example.com/"
+            required
+        >
+
+        <div class="description">
+            OCR検索を行うWebサイトのURLを入力してください。
+        </div>
+
+    </div>
+
+
+    <!-- キーワード -->
+    <div class="form-group">
+
+        <label for="keyword">
+            検索キーワード
+        </label>
+
+        <input
+            type="text"
+            id="keyword"
+            placeholder="例：日"
+        >
+
+        <div class="description">
+            画像内のOCR結果にこの文字列が含まれている画像を検索します。
+        </div>
+
+    </div>
+
+
+    <!-- 設定 -->
+    <div class="settings-row">
+
+        <!-- 取得件数 -->
+        <div class="form-group">
+
+            <label for="limit">
+                取得件数
+            </label>
+
+            <input
+                type="number"
+                id="limit"
+                value="1"
+                min="1"
+                max="20"
+            >
+
+            <div class="description">
+                キーワードに一致した画像を最大何件取得するか。
+            </div>
+
+        </div>
+
+
+        <!-- ページ数 -->
+        <div class="form-group">
+
+            <label for="maxPages">
+                ページ数
+            </label>
+
+            <input
+                type="number"
+                id="maxPages"
+                value="5"
+                min="1"
+                max="100"
+            >
+
+            <div class="description">
+                最大何ページまで巡回するか。
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- タイムアウト -->
+    <div class="form-group">
+
+        <label for="timeoutSeconds">
+            タイムアウト時間（秒）
+        </label>
+
+        <input
+            type="number"
+            id="timeoutSeconds"
+            value="600"
+            min="30"
+            max="3600"
+        >
+
+        <div class="description">
+            検索処理を最大何秒間待つか。
+            例：600秒 = 10分
+        </div>
+
+    </div>
+
+
+    <!-- 検索ボタン -->
+    <button
+        id="searchButton"
+        onclick="startSearch()"
+    >
+        検索開始
+    </button>
+
+
+    <!-- ステータス -->
+    <div id="status">
+        検索条件を入力して「検索開始」を押してください。
+    </div>
+
+
+    <!-- 結果 -->
     <div id="results"></div>
 
-    <script>
-        async function startCrawl() {
-            const url = document.getElementById("url").value;
-            const keyword = document.getElementById("keyword").value;
-            const limit = document.getElementById("limit").value;
+</div>
 
-            document.getElementById("results").innerHTML = "検索中...";
 
-            const apiUrl =
-    `/crawl?url=${encodeURIComponent(url)}&keyword=${encodeURIComponent(keyword)}&limit=${encodeURIComponent(limit)}`;
+<script>
 
-            const res = await fetch(apiUrl);
-            const data = await res.json();
+async function startSearch() {
 
-            const area = document.getElementById("results");
-            area.innerHTML = "";
+    // ------------------------------------------
+    // 入力値取得
+    // ------------------------------------------
 
-            if (!data.results || data.results.length === 0) {
-                area.innerHTML = "<p>結果なし。</p>";
-                return;
-            }
+    const url =
+        document
+            .getElementById("url")
+            .value
+            .trim();
 
-            data.results.forEach(item => {
-                const div = document.createElement("div");
-                div.className = "result";
+    const keyword =
+        document
+            .getElementById("keyword")
+            .value
+            .trim();
 
-                div.innerHTML = `
-                    <strong>画像URL:</strong> <a href="${item.url}" target="_blank">${item.url}</a><br>
-                    <img src="${item.url}" /><br>
-                    <strong>抽出テキスト:</strong><br>
-                    <pre>${item.text}</pre>
-                    <strong>ページURL:</strong> <a href="${item.page_url}" target="_blank">${item.page_url}</a>
-                `;
+    const limit =
+        document
+            .getElementById("limit")
+            .value;
 
-                area.appendChild(div);
-            });
+    const maxPages =
+        document
+            .getElementById("maxPages")
+            .value;
+
+    const timeoutSeconds =
+        document
+            .getElementById("timeoutSeconds")
+            .value;
+
+
+    // ------------------------------------------
+    // 入力チェック
+    // ------------------------------------------
+
+    if (!url) {
+
+        alert(
+            "検索対象URLを入力してください。"
+        );
+
+        return;
+    }
+
+
+    // URL形式チェック
+
+    try {
+
+        new URL(url);
+
+    } catch (error) {
+
+        alert(
+            "正しいURLを入力してください。"
+        );
+
+        return;
+    }
+
+
+    // ------------------------------------------
+    // 数値チェック
+    // ------------------------------------------
+
+    const limitNumber =
+        Number(limit);
+
+    const maxPagesNumber =
+        Number(maxPages);
+
+    const timeoutNumber =
+        Number(timeoutSeconds);
+
+
+    if (
+        !Number.isInteger(limitNumber)
+        ||
+        limitNumber < 1
+        ||
+        limitNumber > 20
+    ) {
+
+        alert(
+            "取得件数は1～20で指定してください。"
+        );
+
+        return;
+    }
+
+
+    if (
+        !Number.isInteger(maxPagesNumber)
+        ||
+        maxPagesNumber < 1
+        ||
+        maxPagesNumber > 100
+    ) {
+
+        alert(
+            "ページ数は1～100で指定してください。"
+        );
+
+        return;
+    }
+
+
+    if (
+        !Number.isInteger(timeoutNumber)
+        ||
+        timeoutNumber < 30
+        ||
+        timeoutNumber > 3600
+    ) {
+
+        alert(
+            "タイムアウト時間は30～3600秒で指定してください。"
+        );
+
+        return;
+    }
+
+
+    // ------------------------------------------
+    // UI初期化
+    // ------------------------------------------
+
+    const button =
+        document
+            .getElementById("searchButton");
+
+    const status =
+        document
+            .getElementById("status");
+
+    const results =
+        document
+            .getElementById("results");
+
+
+    button.disabled = true;
+
+    button.textContent =
+        "検索中...";
+
+
+    status.className = "";
+
+    status.textContent =
+        "検索を開始しています...\n"
+        + "しばらくお待ちください。";
+
+
+    results.innerHTML = "";
+
+
+    // ------------------------------------------
+    // API URL
+    // ------------------------------------------
+    //
+    // localhostは使用しない。
+    // Render上では現在のサーバー自身の
+    // /crawl APIを呼び出す。
+    // ------------------------------------------
+
+    const apiUrl =
+        `/crawl`
+        + `?url=${encodeURIComponent(url)}`
+        + `&keyword=${encodeURIComponent(keyword)}`
+        + `&limit=${encodeURIComponent(limitNumber)}`
+        + `&max_pages=${encodeURIComponent(maxPagesNumber)}`
+        + `&timeout_seconds=${encodeURIComponent(timeoutNumber)}`;
+
+
+    try {
+
+        // --------------------------------------
+        // API呼び出し
+        // --------------------------------------
+
+        const response =
+            await fetch(apiUrl);
+
+
+        // --------------------------------------
+        // JSON取得
+        // --------------------------------------
+
+        let data;
+
+        try {
+
+            data =
+                await response.json();
+
+        } catch (jsonError) {
+
+            throw new Error(
+                "サーバーから正しいJSON形式の結果が返されませんでした。"
+            );
         }
-    </script>
+
+
+        // --------------------------------------
+        // HTTPエラー
+        // --------------------------------------
+
+        if (!response.ok) {
+
+            const details =
+                data.details
+                ||
+                data.error
+                ||
+                "不明なエラー";
+
+            throw new Error(
+                details
+            );
+        }
+
+
+        // --------------------------------------
+        // 結果取得
+        // --------------------------------------
+
+        const resultList =
+            data.results || [];
+
+
+        // --------------------------------------
+        // 結果なし
+        // --------------------------------------
+
+        if (
+            resultList.length === 0
+        ) {
+
+            status.className =
+                "success";
+
+            status.textContent =
+                "検索が完了しました。\n"
+                + "条件に一致する画像は見つかりませんでした。";
+
+            return;
+        }
+
+
+        // --------------------------------------
+        // 結果あり
+        // --------------------------------------
+
+        status.className =
+            "success";
+
+        status.textContent =
+            `検索完了：${resultList.length}件`;
+
+
+        // --------------------------------------
+        // 結果表示
+        // --------------------------------------
+
+        resultList.forEach(
+            (item, index) => {
+
+                const result =
+                    document.createElement(
+                        "div"
+                    );
+
+                result.className =
+                    "result";
+
+
+                // タイトル
+
+                const title =
+                    document.createElement(
+                        "div"
+                    );
+
+                title.className =
+                    "result-title";
+
+                title.textContent =
+                    `検索結果 ${index + 1}`;
+
+
+                // 画像
+
+                const image =
+                    document.createElement(
+                        "img"
+                    );
+
+                image.src =
+                    item.url;
+
+                image.alt =
+                    "OCR検索結果";
+
+
+                image.onerror =
+                    function () {
+
+                        this.style.display =
+                            "none";
+                    };
+
+
+                // OCR結果
+
+                const text =
+                    document.createElement(
+                        "div"
+                    );
+
+                text.className =
+                    "result-text";
+
+                text.textContent =
+                    item.text
+                    ||
+                    "(OCR結果なし)";
+
+
+                // 画像URL
+
+                const link =
+                    document.createElement(
+                        "a"
+                    );
+
+                link.className =
+                    "result-link";
+
+                link.href =
+                    item.url;
+
+                link.target =
+                    "_blank";
+
+                link.rel =
+                    "noopener noreferrer";
+
+                link.textContent =
+                    "画像を開く";
+
+
+                // 元ページ
+
+                if (item.page_url) {
+
+                    const pageLink =
+                        document.createElement(
+                            "a"
+                        );
+
+                    pageLink.className =
+                        "result-link";
+
+                    pageLink.href =
+                        item.page_url;
+
+                    pageLink.target =
+                        "_blank";
+
+                    pageLink.rel =
+                        "noopener noreferrer";
+
+                    pageLink.textContent =
+                        "元ページを開く";
+
+
+                    result.appendChild(
+                        pageLink
+                    );
+                }
+
+
+                result.appendChild(
+                    title
+                );
+
+                result.appendChild(
+                    image
+                );
+
+                result.appendChild(
+                    text
+                );
+
+                result.appendChild(
+                    link
+                );
+
+
+                results.appendChild(
+                    result
+                );
+            }
+        );
+
+    } catch (error) {
+
+        // --------------------------------------
+        // エラー表示
+        // --------------------------------------
+
+        console.error(
+            error
+        );
+
+        status.className =
+            "error";
+
+        status.textContent =
+            "検索中にエラーが発生しました。\n\n"
+            + error.message;
+
+    } finally {
+
+        // --------------------------------------
+        // ボタン復帰
+        // --------------------------------------
+
+        button.disabled =
+            false;
+
+        button.textContent =
+            "検索開始";
+    }
+}
+
+</script>
 
 </body>
 </html>
