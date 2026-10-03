@@ -8,7 +8,7 @@
         content="width=device-width, initial-scale=1.0"
     >
 
-    <title>画像OCR検索</title>
+    <title>画像内文字検索</title>
 
     <style>
         * {
@@ -139,54 +139,101 @@
             margin-top: 30px;
         }
 
+        /* ==========================================
+           検索結果
+           ========================================== */
+
         .result {
             margin-bottom: 20px;
-            padding: 20px;
+            padding: 12px;
 
-            border: 1px solid #ddd;
-            border-radius: 8px;
+            border: 1px solid #ccc;
 
-            background: #fafafa;
+            background: #fff;
         }
+
+        /* ページURL・画像URL */
+
+        .result-url {
+            margin-bottom: 14px;
+
+            font-size: 14px;
+            line-height: 1.5;
+
+            word-break: break-all;
+        }
+
+        .result-url-label {
+            font-weight: bold;
+        }
+
+        .result-url a {
+            color: #0066cc;
+            text-decoration: underline;
+        }
+
+        .result-url a:hover {
+            color: #004499;
+        }
+
+        /* 画像 */
 
         .result img {
             display: block;
 
             max-width: 100%;
-            max-height: 400px;
+            max-height: 500px;
 
-            margin-bottom: 15px;
+            margin-bottom: 10px;
 
-            border-radius: 6px;
+            object-fit: contain;
         }
 
-        .result-title {
+        /* 抽出テキスト */
+
+        .result-text-title {
+            margin-top: 8px;
             margin-bottom: 8px;
 
             font-weight: bold;
+
+            font-size: 16px;
         }
 
         .result-text {
-            padding: 12px;
+            margin-bottom: 10px;
 
-            background: white;
+            padding: 0;
 
-            border: 1px solid #ddd;
-            border-radius: 6px;
+            background: transparent;
+
+            border: none;
 
             white-space: pre-wrap;
             word-break: break-word;
+
+            font-size: 14px;
+            line-height: 1.4;
         }
 
-        .result-link {
-            display: inline-block;
+        /* 元ページURL */
 
+        .result-page-url {
             margin-top: 10px;
 
-            color: #333;
-            text-decoration: underline;
+            font-size: 14px;
+            line-height: 1.5;
 
             word-break: break-all;
+        }
+
+        .result-page-url a {
+            color: #0066cc;
+            text-decoration: underline;
+        }
+
+        .result-page-url a:hover {
+            color: #004499;
         }
 
         .error {
@@ -213,6 +260,14 @@
             h1 {
                 font-size: 24px;
             }
+
+            .result {
+                padding: 10px;
+            }
+
+            .result img {
+                max-height: 400px;
+            }
         }
     </style>
 </head>
@@ -221,13 +276,13 @@
 
 <div class="container">
 
-    <h1>画像OCR検索</h1>
+    <h1>画像内文字検索</h1>
 
     <!-- URL -->
     <div class="form-group">
 
         <label for="url">
-            検索対象URL
+            検索対象URL（開始地点）
         </label>
 
         <input
@@ -238,7 +293,7 @@
         >
 
         <div class="description">
-            OCR検索を行うWebサイトのURLを入力してください。
+            画像内文字検索を行うWebサイトのURLを入力してください。
         </div>
 
     </div>
@@ -330,7 +385,6 @@
 
         <div class="description">
             検索処理を最大何秒間待つか。
-            例：600秒 = 10分
         </div>
 
     </div>
@@ -511,7 +565,7 @@ async function startSearch() {
     status.className = "";
 
     status.textContent =
-        "検索を開始しています...\n"
+        "検索を開始しています。\n"
         + "しばらくお待ちください。";
 
 
@@ -520,11 +574,6 @@ async function startSearch() {
 
     // ------------------------------------------
     // API URL
-    // ------------------------------------------
-    //
-    // localhostは使用しない。
-    // Render上では現在のサーバー自身の
-    // /crawl APIを呼び出す。
     // ------------------------------------------
 
     const apiUrl =
@@ -627,7 +676,7 @@ async function startSearch() {
         // --------------------------------------
 
         resultList.forEach(
-            (item, index) => {
+            (item) => {
 
                 const result =
                     document.createElement(
@@ -638,21 +687,133 @@ async function startSearch() {
                     "result";
 
 
-                // タイトル
+                // ==================================
+                // ページURL
+                // ==================================
 
-                const title =
+                const pageUrlTop =
                     document.createElement(
                         "div"
                     );
 
-                title.className =
-                    "result-title";
+                pageUrlTop.className =
+                    "result-url";
 
-                title.textContent =
-                    `検索結果 ${index + 1}`;
+                const pageUrlLabel =
+                    document.createElement(
+                        "span"
+                    );
+
+                pageUrlLabel.className =
+                    "result-url-label";
+
+                pageUrlLabel.textContent =
+                    "ページURL: ";
+
+                pageUrlTop.appendChild(
+                    pageUrlLabel
+                );
 
 
+                if (item.page_url) {
+
+                    const pageLinkTop =
+                        document.createElement(
+                            "a"
+                        );
+
+                    pageLinkTop.href =
+                        item.page_url;
+
+                    pageLinkTop.target =
+                        "_blank";
+
+                    pageLinkTop.rel =
+                        "noopener noreferrer";
+
+                    pageLinkTop.textContent =
+                        item.page_url;
+
+                    pageUrlTop.appendChild(
+                        pageLinkTop
+                    );
+
+                } else {
+
+                    pageUrlTop.appendChild(
+                        document.createTextNode(
+                            "(ページURLなし)"
+                        )
+                    );
+                }
+
+
+                result.appendChild(
+                    pageUrlTop
+                );
+
+
+                // ==================================
+                // 画像URL
+                // ==================================
+
+                const imageUrlBox =
+                    document.createElement(
+                        "div"
+                    );
+
+                imageUrlBox.className =
+                    "result-url";
+
+
+                const imageUrlLabel =
+                    document.createElement(
+                        "span"
+                    );
+
+                imageUrlLabel.className =
+                    "result-url-label";
+
+                imageUrlLabel.textContent =
+                    "画像URL: ";
+
+
+                imageUrlBox.appendChild(
+                    imageUrlLabel
+                );
+
+
+                const imageLink =
+                    document.createElement(
+                        "a"
+                    );
+
+                imageLink.href =
+                    item.url;
+
+                imageLink.target =
+                    "_blank";
+
+                imageLink.rel =
+                    "noopener noreferrer";
+
+                imageLink.textContent =
+                    item.url;
+
+
+                imageUrlBox.appendChild(
+                    imageLink
+                );
+
+
+                result.appendChild(
+                    imageUrlBox
+                );
+
+
+                // ==================================
                 // 画像
+                // ==================================
 
                 const image =
                     document.createElement(
@@ -674,7 +835,31 @@ async function startSearch() {
                     };
 
 
-                // OCR結果
+                result.appendChild(
+                    image
+                );
+
+
+                // ==================================
+                // 抽出テキスト
+                // ==================================
+
+                const textTitle =
+                    document.createElement(
+                        "div"
+                    );
+
+                textTitle.className =
+                    "result-text-title";
+
+                textTitle.textContent =
+                    "抽出テキスト:";
+
+
+                result.appendChild(
+                    textTitle
+                );
+
 
                 const text =
                     document.createElement(
@@ -690,80 +875,80 @@ async function startSearch() {
                     "(OCR結果なし)";
 
 
-                // 画像URL
-
-                const link =
-                    document.createElement(
-                        "a"
-                    );
-
-                link.className =
-                    "result-link";
-
-                link.href =
-                    item.url;
-
-                link.target =
-                    "_blank";
-
-                link.rel =
-                    "noopener noreferrer";
-
-                link.textContent =
-                    "画像を開く";
-
-
-                // 元ページ
-
-                if (item.page_url) {
-
-                    const pageLink =
-                        document.createElement(
-                            "a"
-                        );
-
-                    pageLink.className =
-                        "result-link";
-
-                    pageLink.href =
-                        item.page_url;
-
-                    pageLink.target =
-                        "_blank";
-
-                    pageLink.rel =
-                        "noopener noreferrer";
-
-                    pageLink.textContent =
-                        "元ページを開く";
-
-
-                    result.appendChild(
-                        pageLink
-                    );
-                }
-
-
-                result.appendChild(
-                    title
-                );
-
-                result.appendChild(
-                    image
-                );
-
                 result.appendChild(
                     text
                 );
 
-                result.appendChild(
-                    link
-                );
 
+                // ==================================
+                // ページURL（下部）
+                // ==================================
+
+                if (item.page_url) {
+
+                    const pageUrlBottom =
+                        document.createElement(
+                            "div"
+                        );
+
+                    pageUrlBottom.className =
+                        "result-page-url";
+
+
+                    const pageLabel =
+                        document.createElement(
+                            "span"
+                        );
+
+                    pageLabel.className =
+                        "result-url-label";
+
+                    pageLabel.textContent =
+                        "ページURL: ";
+
+
+                    pageUrlBottom.appendChild(
+                        pageLabel
+                    );
+
+
+                    const pageLinkBottom =
+                        document.createElement(
+                            "a"
+                        );
+
+                    pageLinkBottom.href =
+                        item.page_url;
+
+                    pageLinkBottom.target =
+                        "_blank";
+
+                    pageLinkBottom.rel =
+                        "noopener noreferrer";
+
+                    pageLinkBottom.textContent =
+                        item.page_url;
+
+
+                    pageUrlBottom.appendChild(
+                        pageLinkBottom
+                    );
+
+
+                    result.appendChild(
+                        pageUrlBottom
+                    );
+                }
+
+
+                // ==================================
+                // 結果を追加
+                // ==================================
 
                 results.appendChild(
                     result
                 );
+
             }
         );
 
