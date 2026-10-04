@@ -216,26 +216,6 @@
             line-height: 1.4;
         }
 
-        /* 元ページURL */
-
-        .result-page-url {
-            margin-top: 10px;
-
-            font-size: 14px;
-            line-height: 1.5;
-
-            word-break: break-all;
-        }
-
-        .result-page-url a {
-            color: #0066cc;
-            text-decoration: underline;
-        }
-
-        .result-page-url a:hover {
-            color: #004499;
-        }
-
         .error {
             background: #ffecec;
             color: #b00020;
@@ -881,67 +861,6 @@ async function startSearch() {
 
 
                 // ==================================
-                // ページURL（下部）
-                // ==================================
-
-                if (item.page_url) {
-
-                    const pageUrlBottom =
-                        document.createElement(
-                            "div"
-                        );
-
-                    pageUrlBottom.className =
-                        "result-page-url";
-
-
-                    const pageLabel =
-                        document.createElement(
-                            "span"
-                        );
-
-                    pageLabel.className =
-                        "result-url-label";
-
-                    pageLabel.textContent =
-                        "ページURL: ";
-
-
-                    pageUrlBottom.appendChild(
-                        pageLabel
-                    );
-
-
-                    const pageLinkBottom =
-                        document.createElement(
-                            "a"
-                        );
-
-                    pageLinkBottom.href =
-                        item.page_url;
-
-                    pageLinkBottom.target =
-                        "_blank";
-
-                    pageLinkBottom.rel =
-                        "noopener noreferrer";
-
-                    pageLinkBottom.textContent =
-                        item.page_url;
-
-
-                    pageUrlBottom.appendChild(
-                        pageLinkBottom
-                    );
-
-
-                    result.appendChild(
-                        pageUrlBottom
-                    );
-                }
-
-
-                // ==================================
                 // 結果を追加
                 // ==================================
 
@@ -961,6 +880,7 @@ async function startSearch() {
         console.error(
             error
         );
+
 
         status.className =
             "error";
